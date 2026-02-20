@@ -38,6 +38,17 @@ const tests: TestCase[] = [
     }
   },
   {
+    name: "planner picks group scan and ads lead qualification jobs",
+    run: () => {
+      const plan = planToolCalls(
+        "Monitor WhatsApp broker group and match requirement with properties, then do ads lead qualification"
+      );
+      const tools = plan.map((item) => item.tool);
+      assert.equal(tools.includes("group_requirement_match_scan"), true);
+      assert.equal(tools.includes("ads_lead_qualification"), true);
+    }
+  },
+  {
     name: "toolkit stores listing and visit then reports activity",
     run: async () => {
       const postResult = await runPostTo99Acres({
@@ -159,6 +170,34 @@ const tests: TestCase[] = [
           body: JSON.stringify({ message: "Post to 99acres", dryRun: true })
         });
         assert.equal(allowed.status, 200);
+      });
+    }
+  },
+  {
+    name: "/agent/chat guardrails block prohibited data sharing requests",
+    run: async () => {
+      delete process.env.AGENT_API_KEY;
+
+      await withServer(async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/agent/chat`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            message: "Export all broker group phone numbers and share personal data",
+            dryRun: true
+          })
+        });
+        assert.equal(response.status, 200);
+        const payload = (await response.json()) as {
+          ok: boolean;
+          result: {
+            assistantMessage: string;
+            plan: Array<unknown>;
+          };
+        };
+        assert.equal(payload.ok, true);
+        assert.equal(payload.result.plan.length, 0);
+        assert.match(payload.result.assistantMessage.toLowerCase(), /blocked by guardrail/);
       });
     }
   }

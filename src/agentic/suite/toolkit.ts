@@ -69,6 +69,67 @@ export async function runMatchPropertyToBuyer(input: ChatRequest): Promise<ToolE
   };
 }
 
+export async function runGroupRequirementMatchScan(input: ChatRequest): Promise<ToolExecutionRecord> {
+  const message = input.message.toLowerCase();
+  const lead = input.lead || {
+    message: input.message,
+    name: "Group Lead",
+    preferredLanguage: "hinglish"
+  };
+  const qualification = intake.qualify(lead);
+  const matches = matcher.shortlist(qualification.requirement, 5);
+
+  const requiresApproval = /\b(auto[\s-]?send|broadcast|blast|mass message)\b/.test(message);
+  const summary =
+    matches.length > 0
+      ? `Scanned group requirement and found ${matches.length} candidate matches. ${requiresApproval ? "Auto-send requested: blocked pending human approval." : "Ready for broker review."}`
+      : "Scanned group requirement but no strong matches found.";
+
+  return {
+    tool: "group_requirement_match_scan",
+    ok: true,
+    summary,
+    data: {
+      requiresApproval,
+      lead,
+      matches
+    }
+  };
+}
+
+export async function runAdsLeadQualification(input: ChatRequest): Promise<ToolExecutionRecord> {
+  const lead = input.lead || {
+    message: input.message,
+    name: "Ads Lead",
+    preferredLanguage: "hinglish"
+  };
+  const qualification = intake.qualify(lead);
+  const score = Math.max(0, Math.min(100, qualification.requirement.confidence || 50));
+  const stage = score >= 75 ? "hot" : score >= 45 ? "warm" : "cold";
+  const nextAction =
+    stage === "hot"
+      ? "Call within 15 minutes and share 2 best-fit properties."
+      : stage === "warm"
+        ? "Send WhatsApp shortlist and schedule follow-up in 24 hours."
+        : "Start nurture sequence and collect missing requirements.";
+
+  return {
+    tool: "ads_lead_qualification",
+    ok: true,
+    summary: `Qualified ads lead as ${stage.toUpperCase()} (${score}/100). ${nextAction}`,
+    data: {
+      stage,
+      score,
+      nextAction,
+      requirement: qualification.requirement,
+      reasons: [
+        `Confidence: ${score}/100`,
+        "Budget/location clarity and urgency influence score."
+      ]
+    }
+  };
+}
+
 export async function runSendWhatsappFollowup(input: ChatRequest): Promise<ToolExecutionRecord> {
   const lead = input.lead || {
     message: input.message,

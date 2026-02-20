@@ -3,6 +3,8 @@ import type { LeadInput, PropertyMatch } from "../types.js";
 export type ToolName =
   | "post_to_99acres"
   | "match_property_to_buyer"
+  | "group_requirement_match_scan"
+  | "ads_lead_qualification"
   | "send_whatsapp_followup"
   | "schedule_site_visit"
   | "generate_performance_report";

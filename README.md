@@ -18,6 +18,15 @@ This repo now includes a tool-planned chat endpoint (`POST /agent/chat`) that ca
 - `send_whatsapp_followup` (uses `wacli`, respects dry-run)
 - `schedule_site_visit` (demo scheduler)
 - `generate_performance_report` (snapshot from stored listing/visit activity)
+- `group_requirement_match_scan` (monitor broker-group requirement text and shortlist matching properties)
+- `ads_lead_qualification` (score ad leads hot/warm/cold and return next action)
+
+## Guardrails (enforced in `/agent/chat`)
+
+- Blocks requests that attempt PII scraping/export (phone/contact/personal data leakage).
+- Blocks non-compliant claims such as guaranteed/assured return language.
+- Blocks bulk/auto outbound messaging unless explicit human approval workflow is used.
+- On block, contract stays intact: response returns `assistantMessage`, empty `plan`, empty `toolResults`, and safe next prompts.
 
 Persistence notes:
 - If `DATABASE_URL` is set, `POST /agent/chat` tools persist to PostgreSQL tables:
@@ -122,6 +131,26 @@ curl -X POST http://localhost:8080/agent/chat \
 
 ```bash
 npm run openrouter:chat -- "Draft a short WhatsApp follow-up for a 2 BHK buyer in Whitefield"
+```
+
+### Example: group scan workflow
+
+```bash
+curl -X POST http://localhost:8080/agent/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Monitor WhatsApp broker group and match requirement with properties in Wakad"
+  }'
+```
+
+### Example: ads lead qualification workflow
+
+```bash
+curl -X POST http://localhost:8080/agent/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Do ads lead qualification for this lead looking for 2 BHK in Whitefield under 1.2 cr"
+  }'
 ```
 
 ### Example: send WhatsApp via wacli
