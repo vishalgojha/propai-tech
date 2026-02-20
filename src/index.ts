@@ -3,7 +3,7 @@ import { startRealtorWhatsappAgent } from "./agentic/whatsapp/agent-loop.js";
 import { logger } from "./utils/logger.js";
 
 async function main() {
-  logger.info("Starting Evolution Real Estate WhatsApp Helper...");
+  logger.info("Starting PropAI Tech WhatsApp Helper...");
   await startRealtorWhatsappAgent();
 }
 

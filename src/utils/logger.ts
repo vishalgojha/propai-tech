@@ -1,5 +1,5 @@
-﻿import { mkdirSync, appendFileSync, existsSync } from "node:fs";
-import { dirname } from "node:path";
+import { appendFileSync, existsSync, mkdirSync } from "node:fs";
+import { resolve } from "node:path";
 
 const level = process.env.LOG_LEVEL || "info";
 const levels = ["debug", "info", "warn", "error"];
@@ -9,7 +9,7 @@ function shouldLog(lvl: string) {
 }
 
 function writeLine(line: string) {
-  const logPath = "C:/Users/Vishal Gopal Ojha/evolution-real-estate-agent/logs/audit";
+  const logPath = resolve(process.cwd(), "logs", "audit");
   const file = `${logPath}/audit-${new Date().toISOString().slice(0, 10)}.log`;
   if (!existsSync(logPath)) mkdirSync(logPath, { recursive: true });
   appendFileSync(file, line + "\n", "utf8");

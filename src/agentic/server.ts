@@ -31,7 +31,7 @@ export function startAgenticServer(port = Number(process.env.PORT || 8080)) {
 
   server.listen(port, () => {
     // eslint-disable-next-line no-console
-    console.log(`Realtor Agentic App running on http://localhost:${port}`);
+    console.log(`PropAI Tech Agentic App running on http://localhost:${port}`);
   });
 
   return server;
