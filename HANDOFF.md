@@ -1,50 +1,67 @@
-# Realtor Suite Agent Engine - AI Handoff
+# PropAI Tech - AI Handoff
 
 Date: 2026-02-20  
-Project root: `C:\Users\Vishal Gopal Ojha\evolution-real-estate-agent`  
+Project root: `C:\Users\Vishal Gopal Ojha\propai-tech`  
 Audience: Next AI coding agent continuing implementation
 
 ## Mission
 
-Continue Option A (Agent Engine Core) from demo-capable state to production-capable state without breaking existing endpoints.
+Continue single-agent realtor assistant development with strict guardrails, OpenRouter-backed reasoning, and production deployment readiness.
 
 ## Current State (Do Not Re-discover)
 
-Implemented and working:
+Implemented and verified:
 
-- New endpoint: `POST /agent/chat`
-- Planner + execution pipeline for tool orchestration
-- Tool set currently wired:
-  - `post_to_99acres` (mock)
+- `POST /agent/chat` orchestration endpoint with validation/auth checks.
+- Tool planner + execution pipeline in `src/agentic/suite/*`.
+- Toolset includes:
+  - `post_to_99acres`
   - `match_property_to_buyer`
+  - `group_requirement_match_scan`
+  - `ads_lead_qualification`
   - `send_whatsapp_followup`
   - `schedule_site_visit`
   - `generate_performance_report`
-- Existing legacy endpoints unchanged and still available
-- Build passes: `cmd /c npm run build`
-- PostgreSQL persistence support (`listings`, `visits`, `agent_actions`) with in-memory fallback
-- `post_to_99acres` wired via `PropaiLiveAdapter` / `PropaiLiveBridge` with simulated fallback
-- `/agent/chat` request validation + basic API-key and role guardrails
-- Automated tests wired (`npm test`) and passing
+- Guardrails enforced before execution:
+  - blocks PII scraping/export style requests
+  - blocks non-compliant guaranteed-return claims
+  - blocks bulk/auto outbound messaging without approval workflow
+- OpenRouter integration live across:
+  - backend assistant summary generation
+  - WhatsApp parser fallback JSON extraction
+  - CLI command `npm run openrouter:chat -- "..."`.
+- Built-in frontend console served from backend:
+  - `GET /app`
+  - assets: `/app.css`, `/app.js`
+- CI configured:
+  - `.github/workflows/ci.yml` (`npm ci`, `npm run build`, `npm test`).
+- Railway config added:
+  - `railway.json` with `npm run start` and `/health` check.
+- Local launcher added:
+  - `quick-launch.bat` (api/api-bg/legacy/legacy-bg/openrouter modes).
+- Branding cleanup completed:
+  - package name is `propai-tech`
+  - startup logs mention PropAI Tech
+  - logger path uses repo-relative `logs/audit`.
 
-Extracted but not integrated:
+Validation:
 
-- `realtor-suite-agent.py` (Python Anthropic tool schema template)
+- `npm run build` passes.
+- `npm test` passes (`8/8`).
 
-## Exact Files In Scope
-
-Primary:
+## Core Files In Scope
 
 - `src/agentic/server.ts`
+- `src/agentic/frontend.ts`
 - `src/agentic/suite/engine.ts`
 - `src/agentic/suite/planner.ts`
 - `src/agentic/suite/toolkit.ts`
 - `src/agentic/suite/types.ts`
-- `src/agentic/suite/demo-store.ts`
-
-Reference:
-
-- `realtor-suite-agent.py` (tool schema + behavior reference only)
+- `src/agentic/suite/guardrails.ts`
+- `src/whatsapp/message-parser.ts`
+- `src/llm/openrouter.ts`
+- `src/cli/openrouter-chat.ts`
+- `AGENT_GUARDRAILS_AND_SKILLS.md`
 
 ## Behavior Contract: `/agent/chat`
 
@@ -55,62 +72,75 @@ Input:
   "message": "string, required",
   "lead": "optional LeadInput",
   "recipient": "optional phone number",
-  "dryRun": "optional boolean"
+  "dryRun": "optional boolean",
+  "model": "optional OpenRouter model override"
 }
 ```
 
-Output:
+Output contract (must remain stable):
 
 - `assistantMessage`
 - `plan`
 - `toolResults`
 - `suggestedNextPrompts`
 
-Do not break this response shape unless explicitly requested.
+Guardrail block behavior:
 
-## Mandatory Constraints For Next Agent
+- Returns normal 200 response shape with:
+  - safe `assistantMessage`
+  - empty `plan`
+  - empty `toolResults`
+  - safe suggestions
 
-- Preserve existing routes and current response contracts.
-- Keep TypeScript strict-mode compatible.
-- Prefer incremental edits over rewrites.
-- If adding dependencies, update `README.md`.
-- Add tests for any non-trivial behavior changes.
+## Deployment Notes
 
-## Highest-Priority Pending Work
+Railway:
 
-1. Expand real integrations behind adapters
-- Broaden `PropaiLiveBridge` from basic publish call to full provider contract fields/retries/timeout policy.
+- Uses `railway.json`
+- Health path: `/health`
+- Start: `npm run start`
 
-2. Harden auth model
-- Replace header-only role checks with signed token or upstream identity integration.
+Important envs:
 
-3. Expand test coverage
-- Add negative-path tests for bridge failures and database connection failures.
-- Add CI workflow test execution.
+- `OPENROUTER_API_KEY`
+- `OPENROUTER_MODEL`
+- `AGENT_API_KEY`
+- `AGENT_ALLOWED_ROLES`
+- `CORS_ORIGIN`
+- `WHATSAPP_DM_POLICY`
+- `WHATSAPP_ALLOW_FROM` (if allowlist)
+- `DATABASE_URL` (required for pairing mode)
 
-4. Python template usage decision (completed)
-- Chosen: **port tool-schema concepts into TypeScript**, no Python sidecar for this iteration.
-- Rationale: single-runtime deployment, lower operational complexity, easier contract control for `/agent/chat`.
+## Priority Next Work
 
-## First 10 Commands To Run
+1. Approval Queue for blocked bulk actions
+- Add persistence + endpoints for pending approval actions.
+- Enable operator approve/reject flow in `/app`.
+
+2. Provider hardening
+- Move `post_to_99acres` from fallback-heavy mode to fully integrated provider contract.
+
+3. Auth hardening
+- Replace header-only role model with signed token/JWT or upstream identity.
+
+4. Observability
+- Add structured metrics/traces for guardrail blocks, tool latency, and OpenRouter failures.
+
+## Quick Start Commands
 
 ```bash
-cd C:\Users\Vishal Gopal Ojha\evolution-real-estate-agent
-cmd /c npm install
-cmd /c npm run build
-cmd /c npm run dev
-curl -X GET http://localhost:8080/health
-curl -X POST http://localhost:8080/agent/chat ^
-  -H "Content-Type: application/json" ^
-  -d "{\"message\":\"Post my 3 BHK in Wakad to 99acres and send WhatsApp follow-up\",\"recipient\":\"+919999999999\",\"dryRun\":true}"
+cd C:\Users\Vishal Gopal Ojha\propai-tech
+npm install --ignore-scripts
+npm run build
+npm run start
 ```
 
-## Definition Of Done For Next Iteration
+Verify:
 
-- `/agent/chat` persists actions to DB.
-- `post_to_99acres` is no longer mock-only.
-- Validation + auth checks exist.
-- Added automated tests pass in CI/local build.
-- `README.md` updated with new setup/run requirements.
+- `GET http://localhost:8080/health`
+- Open `http://localhost:8080/app`
 
-Status note (2026-02-20): Local done items above are implemented and validated with `npm test`; CI wiring remains pending.
+Optional:
+
+- `quick-launch.bat api 1310`
+- `quick-launch.bat openrouter "Draft follow-up for warm lead"`
