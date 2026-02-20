@@ -72,6 +72,37 @@ Python template decision (`realtor-suite-agent.py`):
   - toolkit listing/visit/report behavior
   - `/agent/chat` integration (dry-run + validation + auth/RBAC)
 
+## Deploy (Railway)
+
+1. Create new Railway project from this GitHub repo.
+2. Ensure Railway uses project root and detects `railway.json`.
+3. Add these required variables in Railway:
+
+| Variable | Required | Example |
+|---|---|---|
+| `PORT` | Yes | `8080` |
+| `OPENROUTER_API_KEY` | Yes | `sk-or-...` |
+| `OPENROUTER_MODEL` | Yes | `openai/gpt-4o-mini` |
+| `AGENT_API_KEY` | Recommended | `your-strong-key` |
+| `AGENT_ALLOWED_ROLES` | Recommended | `realtor_admin,ops` |
+| `CORS_ORIGIN` | Yes (prod) | `https://propai.live` |
+| `WACLI_DRY_RUN` | Recommended | `true` |
+| `WHATSAPP_DM_POLICY` | Recommended | `allowlist` |
+| `WHATSAPP_ALLOW_FROM` | If allowlist | `+919999999999,+14155550123` |
+| `DATABASE_URL` | If pairing mode | `postgres://...` |
+
+4. Optional vars for integrations:
+- `PROPAI_LIVE_POST_URL`
+- `PROPAI_LIVE_API_KEY`
+- `PROPAI_LIVE_TIMEOUT_MS`
+- `PROPAI_LIVE_MAX_RETRIES`
+- `PROPAI_LIVE_RETRY_BACKOFF_MS`
+
+5. Deploy.
+6. Verify:
+- `GET https://<your-railway-domain>/health`
+- Open `https://<your-railway-domain>/app`
+
 ## Agentic API
 
 - `GET /health`
