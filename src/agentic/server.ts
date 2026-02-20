@@ -40,6 +40,13 @@ export function startAgenticServer(port = Number(process.env.PORT || 8080)) {
 async function route(req: IncomingMessage, res: ServerResponse, runtimeConfig: RuntimeConfig) {
   const method = req.method || "GET";
   const path = req.url?.split("?")[0] || "/";
+  applyCors(res);
+
+  if (method === "OPTIONS") {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
 
   if (method === "GET" && path === "/") {
     res.writeHead(302, { Location: "/app" });
@@ -206,6 +213,13 @@ function sendJs(res: ServerResponse, status: number, js: string) {
   res.end(js);
 }
 
+function applyCors(res: ServerResponse) {
+  const origin = process.env.CORS_ORIGIN || "*";
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type,x-agent-api-key,x-agent-role");
+}
+
 async function parseJson<T>(req: IncomingMessage): Promise<T> {
   const chunks: Buffer[] = [];
   for await (const chunk of req) {
@@ -295,6 +309,10 @@ function validateChatRequest(body: unknown): ChatValidationResult {
 
   if (payload.dryRun !== undefined && typeof payload.dryRun !== "boolean") {
     return { ok: false, error: "dryRun must be a boolean when provided." };
+  }
+
+  if (payload.model !== undefined && typeof payload.model !== "string") {
+    return { ok: false, error: "model must be a string when provided." };
   }
 
   if (payload.lead !== undefined) {

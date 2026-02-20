@@ -52,6 +52,8 @@ Python template decision (`realtor-suite-agent.py`):
    - `npm run dev`
 4. Check health:
    - `GET http://localhost:8080/health`
+5. Open frontend console:
+   - `http://localhost:8080/app`
 
 ## Tests
 
@@ -102,6 +104,26 @@ curl -X POST http://localhost:8080/agent/chat \
   }'
 ```
 
+### Example: agent chat with OpenRouter model override
+
+```bash
+curl -X POST http://localhost:8080/agent/chat \
+  -H "Content-Type: application/json" \
+  -H "x-agent-api-key: your-key" \
+  -H "x-agent-role: realtor_admin" \
+  -d '{
+    "message": "Summarize completed actions and suggest next step",
+    "model": "openai/gpt-4o-mini",
+    "dryRun": true
+  }'
+```
+
+### Example: OpenRouter CLI
+
+```bash
+npm run openrouter:chat -- "Draft a short WhatsApp follow-up for a 2 BHK buyer in Whitefield"
+```
+
 ### Example: send WhatsApp via wacli
 
 ```bash
@@ -141,6 +163,12 @@ curl -X POST http://localhost:8080/whatsapp/pairing/approve \
 - `PROPAI_LIVE_RETRY_BACKOFF_MS` (default `300`, linear backoff base)
 - `AGENT_API_KEY` (optional, when set `/agent/chat` requires `x-agent-api-key`)
 - `AGENT_ALLOWED_ROLES` (optional CSV, default `realtor_admin,ops`; checks `x-agent-role` when provided)
+- `CORS_ORIGIN` (default `*`)
+- `OPENROUTER_API_KEY` (required to enable OpenRouter in backend + CLI)
+- `OPENROUTER_MODEL` (default `openai/gpt-4o-mini`)
+- `OPENROUTER_BASE_URL` (default `https://openrouter.ai/api/v1`)
+- `OPENROUTER_TIMEOUT_MS` (default `30000`)
+- `OPENROUTER_APP_NAME` / `OPENROUTER_APP_URL` (metadata headers for OpenRouter)
 - `WACLI_DRY_RUN` (default: `true`)
 - `WACLI_BIN` (default: `wacli`)
 

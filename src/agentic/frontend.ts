@@ -3,15 +3,15 @@ export const FRONTEND_HTML = `<!doctype html>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>PropAI Realtor Console</title>
+    <title>PropAI Live Console</title>
     <link rel="stylesheet" href="/app.css" />
   </head>
   <body>
     <main class="shell">
       <header class="hero">
         <p class="eyebrow">PropAI Live</p>
-        <h1>Realtor Control Console</h1>
-        <p class="sub">One place to run your WhatsApp helper and agentic actions.</p>
+        <h1>Realtor Agent Console</h1>
+        <p class="sub">Run tools, approve pairing, and test OpenRouter-backed /agent/chat.</p>
       </header>
 
       <section class="grid">
@@ -45,6 +45,10 @@ export const FRONTEND_HTML = `<!doctype html>
                 <label>Role (optional)</label>
                 <input id="role" placeholder="realtor_admin" />
               </div>
+            </div>
+            <div>
+              <label>OpenRouter Model (optional)</label>
+              <input id="model" placeholder="openai/gpt-4o-mini" />
             </div>
             <button class="primary" type="submit">Run /agent/chat</button>
           </form>
@@ -157,6 +161,9 @@ const chatForm = document.getElementById("chatForm");
 const pairForm = document.getElementById("pairForm");
 const healthBtn = document.getElementById("healthBtn");
 const clearBtn = document.getElementById("clearBtn");
+const modelInput = document.getElementById("model");
+const savedModel = localStorage.getItem("propai_openrouter_model");
+if (savedModel) modelInput.value = savedModel;
 
 function headers() {
   const apiKey = document.getElementById("apiKey").value.trim();
@@ -175,10 +182,13 @@ function print(label, value) {
 
 chatForm.addEventListener("submit", async (e) => {
   e.preventDefault();
+  const model = document.getElementById("model").value.trim();
+  if (model) localStorage.setItem("propai_openrouter_model", model);
   const body = {
     message: document.getElementById("message").value.trim(),
     recipient: document.getElementById("recipient").value.trim() || undefined,
-    dryRun: document.getElementById("dryRun").value === "true"
+    dryRun: document.getElementById("dryRun").value === "true",
+    model: model || undefined
   };
   try {
     const res = await fetch("/agent/chat", { method: "POST", headers: headers(), body: JSON.stringify(body) });

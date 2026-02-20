@@ -6,6 +6,7 @@ import {
   runScheduleSiteVisit,
   runSendWhatsappFollowup
 } from "./toolkit.js";
+import { generateOpenRouterText } from "../../llm/openrouter.js";
 import { getSuiteStore } from "./store.js";
 import type { ChatRequest, ChatResponse, PlannedToolCall, ToolExecutionRecord } from "./types.js";
 
@@ -40,7 +41,7 @@ export class RealtorSuiteAgentEngine {
     }
 
     return {
-      assistantMessage: buildAssistantMessage(plan, results),
+      assistantMessage: await buildAssistantMessage(input, plan, results),
       plan,
       toolResults: results,
       suggestedNextPrompts: [
@@ -73,7 +74,37 @@ async function executeStep(step: PlannedToolCall, input: ChatRequest): Promise<T
   }
 }
 
-function buildAssistantMessage(plan: PlannedToolCall[], results: ToolExecutionRecord[]): string {
+async function buildAssistantMessage(
+  input: ChatRequest,
+  plan: PlannedToolCall[],
+  results: ToolExecutionRecord[]
+): Promise<string> {
+  const llmMessage = await generateOpenRouterText(
+    [
+      {
+        role: "system",
+        content:
+          "You are a concise realtor ops copilot. Summarize executed tools and failures, then suggest one clear next action. Max 70 words."
+      },
+      {
+        role: "user",
+        content: JSON.stringify({
+          request: input.message,
+          plan,
+          results: results.map((item) => ({ tool: item.tool, ok: item.ok, summary: item.summary }))
+        })
+      }
+    ],
+    {
+      model: input.model,
+      temperature: 0.2
+    }
+  );
+
+  if (llmMessage) {
+    return llmMessage;
+  }
+
   const ran = plan.map((step) => step.tool).join(", ");
   const failed = results.filter((item) => !item.ok);
   if (failed.length === 0) {

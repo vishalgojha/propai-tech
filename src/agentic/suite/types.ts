@@ -12,6 +12,7 @@ export type ChatRequest = {
   lead?: LeadInput;
   recipient?: string;
   dryRun?: boolean;
+  model?: string;
 };
 
 export type PlannedToolCall = {

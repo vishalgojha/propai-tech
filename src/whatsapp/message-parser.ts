@@ -1,6 +1,7 @@
-﻿import { callFunction } from "../api/propai-client.js";
-import { logger } from "../utils/logger.js";
+import { callFunction } from "../api/propai-client.js";
+import { generateOpenRouterJson, isOpenRouterEnabled } from "../llm/openrouter.js";
 import type { ParsedMessage } from "../types/index.js";
+import { logger } from "../utils/logger.js";
 
 export async function parseMessage(rawText: string, message: any): Promise<ParsedMessage> {
   const base: ParsedMessage = {
@@ -14,8 +15,18 @@ export async function parseMessage(rawText: string, message: any): Promise<Parse
   const parseRequirementUrl = process.env.PROPAI_PARSE_REQUIREMENT_URL || "";
 
   if (!parsePropertyUrl && !parseRequirementUrl) {
-    logger.info("No parse function URLs configured; sending raw message only");
-    return base;
+    if (!isOpenRouterEnabled()) {
+      logger.info("No parse function URLs configured; sending raw message only");
+      return base;
+    }
+
+    const llmParsed = await parseWithOpenRouter(rawText, message);
+    return llmParsed
+      ? {
+          ...base,
+          ...llmParsed
+        }
+      : base;
   }
 
   try {
@@ -51,6 +62,44 @@ export async function parseMessage(rawText: string, message: any): Promise<Parse
   }
 
   return base;
+}
+
+async function parseWithOpenRouter(rawText: string, message: any): Promise<Partial<ParsedMessage> | null> {
+  try {
+    const payload = await generateOpenRouterJson<{
+      intent?: string;
+      confidence?: number;
+      listing?: Record<string, unknown>;
+      requirement?: Record<string, unknown>;
+      data?: Record<string, unknown>;
+    }>([
+      {
+        role: "system",
+        content:
+          "Extract Indian real estate WhatsApp lead data. Return only JSON with intent(property|requirement|unknown), confidence(0..1), optional listing, optional requirement, and data."
+      },
+      {
+        role: "user",
+        content: JSON.stringify({
+          message: rawText,
+          meta: minimalMeta(message)
+        })
+      }
+    ]);
+
+    if (!payload) return null;
+
+    return {
+      intent: payload.intent || "unknown",
+      listing: payload.listing as any,
+      requirement: payload.requirement as any,
+      confidence: typeof payload.confidence === "number" ? payload.confidence : undefined,
+      data: payload.data || payload
+    };
+  } catch (err) {
+    logger.error("OpenRouter parse failed", { err });
+    return null;
+  }
 }
 
 function minimalMeta(message: any) {
