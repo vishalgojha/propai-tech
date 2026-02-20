@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { RealtorOrchestrator } from "./agents/orchestrator.js";
 import type { LeadInput } from "./types.js";
 import { INDIAN_PROPERTIES } from "./data/indian-properties.js";
+import { FRONTEND_CSS, FRONTEND_HTML, FRONTEND_JS } from "./frontend.js";
 import { loadRuntimeConfigOrThrow, type RuntimeConfig } from "./runtime-config.js";
 import { RealtorSuiteAgentEngine } from "./suite/engine.js";
 import type { ChatRequest } from "./suite/types.js";
@@ -39,6 +40,27 @@ export function startAgenticServer(port = Number(process.env.PORT || 8080)) {
 async function route(req: IncomingMessage, res: ServerResponse, runtimeConfig: RuntimeConfig) {
   const method = req.method || "GET";
   const path = req.url?.split("?")[0] || "/";
+
+  if (method === "GET" && path === "/") {
+    res.writeHead(302, { Location: "/app" });
+    res.end();
+    return;
+  }
+
+  if (method === "GET" && path === "/app") {
+    sendHtml(res, 200, FRONTEND_HTML);
+    return;
+  }
+
+  if (method === "GET" && path === "/app.css") {
+    sendCss(res, 200, FRONTEND_CSS);
+    return;
+  }
+
+  if (method === "GET" && path === "/app.js") {
+    sendJs(res, 200, FRONTEND_JS);
+    return;
+  }
 
   if (method === "GET" && path === "/health") {
     sendJson(res, 200, { ok: true, service: "indian-realtor-agentic-app" });
@@ -161,6 +183,27 @@ function sendJson(res: ServerResponse, status: number, body: unknown) {
     "Content-Type": "application/json; charset=utf-8"
   });
   res.end(JSON.stringify(body, null, 2));
+}
+
+function sendHtml(res: ServerResponse, status: number, html: string) {
+  res.writeHead(status, {
+    "Content-Type": "text/html; charset=utf-8"
+  });
+  res.end(html);
+}
+
+function sendCss(res: ServerResponse, status: number, css: string) {
+  res.writeHead(status, {
+    "Content-Type": "text/css; charset=utf-8"
+  });
+  res.end(css);
+}
+
+function sendJs(res: ServerResponse, status: number, js: string) {
+  res.writeHead(status, {
+    "Content-Type": "application/javascript; charset=utf-8"
+  });
+  res.end(js);
 }
 
 async function parseJson<T>(req: IncomingMessage): Promise<T> {
