@@ -1,0 +1,25 @@
+{
+  "name": "evolution-real-estate-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/agentic-app.ts",
+    "dev:legacy": "tsx src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node dist/tests/run-tests.js",
+    "start": "node dist/agentic-app.js",
+    "start:legacy": "node dist/index.js"
+  },
+  "dependencies": {
+    "@wppconnect-team/wppconnect": "^1.31.0",
+    "dotenv": "^16.4.5",
+    "pg": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.7",
+    "@types/pg": "^8.16.0",
+    "tsx": "^4.7.3",
+    "typescript": "^5.6.2"
+  }
+}
