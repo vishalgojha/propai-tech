@@ -5,6 +5,7 @@ import { RealtorOrchestrator } from "../agentic/agents/orchestrator.js";
 import { evaluateGuardrails } from "../agentic/suite/guardrails.js";
 import { planToolCalls } from "../agentic/suite/planner.js";
 import { RealtorSuiteAgentEngine } from "../agentic/suite/engine.js";
+import { generateOpenRouterText, isOpenRouterEnabled } from "../llm/openrouter.js";
 import {
   runAdsLeadQualification,
   runGeneratePerformanceReport,
@@ -19,6 +20,7 @@ import type { LeadInput, PreferredLanguage } from "../agentic/types.js";
 
 type CliRl = ReturnType<typeof createInterface>;
 type AutonomyLevel = 0 | 1 | 2;
+type ChatHistoryMessage = { role: "user" | "assistant"; content: string };
 
 type SessionState = {
   autonomy: AutonomyLevel;
@@ -32,6 +34,7 @@ type SessionState = {
     preferredLanguage?: PreferredLanguage;
   };
   turns: number;
+  history: ChatHistoryMessage[];
 };
 
 const DEFAULT_DRY_RUN = process.env.WACLI_DRY_RUN !== "false";
@@ -87,7 +90,8 @@ async function runAgenticSession(rl: CliRl) {
     recipient: undefined,
     model: undefined,
     leadDefaults: {},
-    turns: 0
+    turns: 0,
+    history: []
   };
 
   printAgenticHelp();
@@ -133,6 +137,7 @@ async function handleSessionCommand(rl: CliRl, state: SessionState, raw: string)
     state.recipient = undefined;
     state.model = undefined;
     state.leadDefaults = {};
+    state.history = [];
     // eslint-disable-next-line no-console
     console.log("Session defaults cleared.");
     return false;
@@ -263,41 +268,46 @@ async function runAgentTurn(rl: CliRl, state: SessionState, message: string): Pr
       ...state.leadDefaults
     }
   };
+  const turnNote: string[] = [];
+  let plan: PlannedToolCall[] = [];
+  let results: ToolExecutionRecord[] = [];
 
   const guardrail = evaluateGuardrails(request);
   if (!guardrail.allow) {
-    // eslint-disable-next-line no-console
-    console.log(`Blocked: ${guardrail.reason || "Request blocked by guardrails."}`);
+    turnNote.push(guardrail.reason || "Request blocked by guardrails.");
+    const reply = await buildAssistantReply(state, request, plan, results, turnNote.join(" "));
+    printAssistantReply(reply);
+    pushHistory(state, message, reply);
     return;
   }
 
-  const plan = planToolCalls(request.message);
+  plan = planToolCalls(request.message);
   if (plan.length === 0) {
-    const fallback = await suiteEngine.chat(request);
-    // eslint-disable-next-line no-console
-    console.log(`Assistant: ${fallback.assistantMessage}`);
-    if (fallback.suggestedNextPrompts.length > 0) {
-      // eslint-disable-next-line no-console
-      console.log("Try:");
-      for (const prompt of fallback.suggestedNextPrompts) {
-        // eslint-disable-next-line no-console
-        console.log(`  - ${prompt}`);
-      }
-    }
+    turnNote.push("No tool plan triggered. Respond conversationally.");
+    const reply = await buildAssistantReply(state, request, plan, results, turnNote.join(" "));
+    printAssistantReply(reply);
+    pushHistory(state, message, reply);
     return;
   }
 
   printPlan(plan);
 
   if (state.autonomy === 0) {
-    // eslint-disable-next-line no-console
-    console.log("Autonomy L0 (suggest-only): plan created, no tool executed.");
+    turnNote.push("Autonomy L0 suggest-only, no tools executed.");
+    const reply = await buildAssistantReply(state, request, plan, results, turnNote.join(" "));
+    printAssistantReply(reply);
+    pushHistory(state, message, reply);
     return;
   }
 
-  const { results, recipient } = await executePlanWithApprovals(rl, plan, request, state);
+  const execution = await executePlanWithApprovals(rl, plan, request, state);
+  results = execution.results;
+  const recipient = execution.recipient;
   state.recipient = recipient;
   printExecutionSummary(results);
+  const reply = await buildAssistantReply(state, request, plan, results, turnNote.join(" "));
+  printAssistantReply(reply);
+  pushHistory(state, message, reply);
 }
 
 async function executePlanWithApprovals(
@@ -438,6 +448,74 @@ function printExecutionSummary(results: ToolExecutionRecord[]) {
   }
 }
 
+function printAssistantReply(reply: string) {
+  // eslint-disable-next-line no-console
+  console.log(`\nAssistant: ${reply}`);
+}
+
+async function buildAssistantReply(
+  state: SessionState,
+  request: ChatRequest,
+  plan: PlannedToolCall[],
+  results: ToolExecutionRecord[],
+  note: string
+): Promise<string> {
+  if (isOpenRouterEnabled()) {
+    const context = {
+      autonomy: state.autonomy,
+      dryRun: state.dryRun,
+      recipient: request.recipient || null,
+      plan: plan.map((item) => ({ tool: item.tool, reason: item.reason })),
+      results: results.map((item) => ({ tool: item.tool, ok: item.ok, summary: item.summary })),
+      note
+    };
+
+    const llm = await generateOpenRouterText(
+      [
+        {
+          role: "system",
+          content:
+            "You are PropAI terminal copilot. Reply like a live chat assistant in plain concise language. Confirm understanding, summarize what was planned/executed/skipped, respect autonomy and approvals, and end with one practical next action or one short question."
+        },
+        ...state.history.slice(-12),
+        { role: "user", content: request.message },
+        { role: "user", content: `Execution context: ${JSON.stringify(context)}` }
+      ],
+      {
+        model: request.model,
+        temperature: 0.2,
+        maxTokens: 220
+      }
+    );
+
+    if (llm && llm.trim()) {
+      return llm.trim();
+    }
+  }
+
+  if (/guardrail/i.test(note)) {
+    return `${note} Ask for a compliant alternative (for example: summarize leads without sharing personal contacts).`;
+  }
+  if (plan.length === 0) {
+    return "I got you. Tell me the exact outcome you want, and I will plan steps or answer directly in this chat.";
+  }
+  if (results.length === 0) {
+    return `Planned ${plan.length} step(s), but no execution happened due to current autonomy/approvals. Approve steps or change '/set autonomy'.`;
+  }
+
+  const okCount = results.filter((item) => item.ok).length;
+  const failed = results.length - okCount;
+  return `Done. Executed ${results.length} step(s): ${okCount} success, ${failed} failed/skipped. Say 'details' or give the next instruction.`;
+}
+
+function pushHistory(state: SessionState, userMessage: string, assistantMessage: string) {
+  state.history.push({ role: "user", content: userMessage });
+  state.history.push({ role: "assistant", content: assistantMessage });
+  if (state.history.length > 24) {
+    state.history = state.history.slice(-24);
+  }
+}
+
 function printSessionState(state: SessionState) {
   // eslint-disable-next-line no-console
   console.log(
@@ -448,7 +526,8 @@ function printSessionState(state: SessionState) {
         recipient: state.recipient || null,
         model: state.model || null,
         leadDefaults: state.leadDefaults,
-        turns: state.turns
+        turns: state.turns,
+        history_messages: state.history.length
       },
       null,
       2
