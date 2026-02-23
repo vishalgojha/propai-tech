@@ -102,14 +102,20 @@ Run the interactive operator CLI:
 
 Menu capabilities:
 
-- Suite agent chat (`RealtorSuiteAgentEngine`)
-- Lead orchestrator flow (intake + matching + follow-up)
-- WACLI doctor/search/chats/send actions
+- Agentic session loop with:
+  - stateful context across turns
+  - per-step plan display
+  - autonomy levels (`0` suggest-only, `1` local-write confirm, `2` external-step confirm)
+  - command controls (`/set ...`, `/state`, `/clear`)
+- One-shot suite chat (`RealtorSuiteAgentEngine`)
+- One-shot lead orchestrator flow (intake + matching + follow-up)
+- WhatsApp transport submenu (doctor/search/chats/send)
 
 Notes:
 
 - Uses `.env` values (including `WACLI_DRY_RUN`, `WACLI_BIN`).
 - `WACLI_DRY_RUN=true` remains safest for testing.
+- In agentic session, run `/help` to list commands.
 
 ## Tests
 

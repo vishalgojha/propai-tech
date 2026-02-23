@@ -2,11 +2,41 @@ import "dotenv/config";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { RealtorOrchestrator } from "../agentic/agents/orchestrator.js";
+import { evaluateGuardrails } from "../agentic/suite/guardrails.js";
+import { planToolCalls } from "../agentic/suite/planner.js";
 import { RealtorSuiteAgentEngine } from "../agentic/suite/engine.js";
-import type { ChatRequest } from "../agentic/suite/types.js";
+import {
+  runAdsLeadQualification,
+  runGeneratePerformanceReport,
+  runGroupRequirementMatchScan,
+  runMatchPropertyToBuyer,
+  runPostTo99Acres,
+  runScheduleSiteVisit,
+  runSendWhatsappFollowup
+} from "../agentic/suite/toolkit.js";
+import type { ChatRequest, PlannedToolCall, ToolExecutionRecord, ToolName } from "../agentic/suite/types.js";
 import type { LeadInput, PreferredLanguage } from "../agentic/types.js";
 
+type CliRl = ReturnType<typeof createInterface>;
+type AutonomyLevel = 0 | 1 | 2;
+
+type SessionState = {
+  autonomy: AutonomyLevel;
+  dryRun: boolean;
+  recipient?: string;
+  model?: string;
+  leadDefaults: {
+    name?: string;
+    phone?: string;
+    city?: string;
+    preferredLanguage?: PreferredLanguage;
+  };
+  turns: number;
+};
+
 const DEFAULT_DRY_RUN = process.env.WACLI_DRY_RUN !== "false";
+const LOCAL_WRITE_TOOLS: ToolName[] = ["schedule_site_visit"];
+const EXTERNAL_TOOLS: ToolName[] = ["post_to_99acres", "send_whatsapp_followup"];
 
 const suiteEngine = new RealtorSuiteAgentEngine();
 const orchestrator = new RealtorOrchestrator();
@@ -22,24 +52,18 @@ async function main() {
 
       switch (choice) {
         case "1":
-          await runSuiteAgentChat(rl);
+          await runAgenticSession(rl);
           break;
         case "2":
-          await runLeadOrchestrator(rl);
+          await runSuiteAgentChat(rl);
           break;
         case "3":
-          await runWacliDoctor();
+          await runLeadOrchestrator(rl);
           break;
         case "4":
-          await runWacliSearch(rl);
+          await runTransportMenu(rl);
           break;
         case "5":
-          await runWacliChats(rl);
-          break;
-        case "6":
-          await runManualSend(rl);
-          break;
-        case "7":
         case "q":
         case "quit":
         case "exit":
@@ -48,7 +72,7 @@ async function main() {
           return;
         default:
           // eslint-disable-next-line no-console
-          console.log("Invalid option. Use 1-7.");
+          console.log("Invalid option. Use 1-5.");
       }
     }
   } finally {
@@ -56,9 +80,385 @@ async function main() {
   }
 }
 
-async function runSuiteAgentChat(rl: ReturnType<typeof createInterface>) {
+async function runAgenticSession(rl: CliRl) {
+  const state: SessionState = {
+    autonomy: 1,
+    dryRun: DEFAULT_DRY_RUN,
+    recipient: undefined,
+    model: undefined,
+    leadDefaults: {},
+    turns: 0
+  };
+
+  printAgenticHelp();
+
+  while (true) {
+    const raw = await ask(rl, "agent");
+    if (!raw) continue;
+
+    if (raw.startsWith("/")) {
+      const shouldExit = await handleSessionCommand(rl, state, raw);
+      if (shouldExit) {
+        // eslint-disable-next-line no-console
+        console.log("Leaving agentic session.");
+        return;
+      }
+      continue;
+    }
+
+    state.turns += 1;
+    await runAgentTurn(rl, state, raw);
+  }
+}
+
+async function handleSessionCommand(rl: CliRl, state: SessionState, raw: string): Promise<boolean> {
+  const text = raw.slice(1).trim();
+  const [command, ...rest] = text.split(/\s+/);
+  const cmd = (command || "").toLowerCase();
+  const value = rest.join(" ").trim();
+
+  if (cmd === "exit" || cmd === "back" || cmd === "quit") return true;
+
+  if (cmd === "help") {
+    printAgenticHelp();
+    return false;
+  }
+
+  if (cmd === "state") {
+    printSessionState(state);
+    return false;
+  }
+
+  if (cmd === "clear") {
+    state.recipient = undefined;
+    state.model = undefined;
+    state.leadDefaults = {};
+    // eslint-disable-next-line no-console
+    console.log("Session defaults cleared.");
+    return false;
+  }
+
+  if (cmd === "set") {
+    await applySetCommand(rl, state, value);
+    return false;
+  }
+
   // eslint-disable-next-line no-console
-  console.log("\n[Suite Agent Chat]");
+  console.log(`Unknown command: /${cmd}. Use /help.`);
+  return false;
+}
+
+async function applySetCommand(rl: CliRl, state: SessionState, value: string): Promise<void> {
+  const [keyRaw, ...rest] = value.split(/\s+/);
+  const key = (keyRaw || "").toLowerCase();
+  const val = rest.join(" ").trim();
+
+  if (!key) {
+    // eslint-disable-next-line no-console
+    console.log("Usage: /set <autonomy|dryrun|recipient|model|name|phone|city|lang> <value>");
+    return;
+  }
+
+  if (key === "autonomy") {
+    if (val === "0" || val === "1" || val === "2") {
+      state.autonomy = Number(val) as AutonomyLevel;
+      // eslint-disable-next-line no-console
+      console.log(`autonomy=${state.autonomy}`);
+      return;
+    }
+    // eslint-disable-next-line no-console
+    console.log("autonomy must be 0, 1, or 2.");
+    return;
+  }
+
+  if (key === "dryrun") {
+    const parsed = parseBoolean(val);
+    if (parsed === null) {
+      // eslint-disable-next-line no-console
+      console.log("dryrun must be true/false (or on/off).");
+      return;
+    }
+    state.dryRun = parsed;
+    // eslint-disable-next-line no-console
+    console.log(`dryRun=${state.dryRun}`);
+    return;
+  }
+
+  if (key === "recipient") {
+    state.recipient = val && val.toLowerCase() !== "none" ? val : undefined;
+    // eslint-disable-next-line no-console
+    console.log(`recipient=${state.recipient || "(none)"}`);
+    return;
+  }
+
+  if (key === "model") {
+    state.model = val && val.toLowerCase() !== "none" ? val : undefined;
+    // eslint-disable-next-line no-console
+    console.log(`model=${state.model || "(default)"}`);
+    return;
+  }
+
+  if (key === "name") {
+    state.leadDefaults.name = val || undefined;
+    // eslint-disable-next-line no-console
+    console.log(`lead.name=${state.leadDefaults.name || "(none)"}`);
+    return;
+  }
+
+  if (key === "phone") {
+    state.leadDefaults.phone = val || undefined;
+    // eslint-disable-next-line no-console
+    console.log(`lead.phone=${state.leadDefaults.phone || "(none)"}`);
+    return;
+  }
+
+  if (key === "city") {
+    state.leadDefaults.city = val || undefined;
+    // eslint-disable-next-line no-console
+    console.log(`lead.city=${state.leadDefaults.city || "(none)"}`);
+    return;
+  }
+
+  if (key === "lang" || key === "language") {
+    const parsed = parsePreferredLanguage(val);
+    if (!parsed && val) {
+      // eslint-disable-next-line no-console
+      console.log("lang must be en, hi, or hinglish.");
+      return;
+    }
+    state.leadDefaults.preferredLanguage = parsed;
+    // eslint-disable-next-line no-console
+    console.log(`lead.preferredLanguage=${parsed || "(none)"}`);
+    return;
+  }
+
+  if (key === "wizard") {
+    await runLeadDefaultWizard(rl, state);
+    return;
+  }
+
+  // eslint-disable-next-line no-console
+  console.log(`Unknown set key: ${key}`);
+}
+
+async function runLeadDefaultWizard(rl: CliRl, state: SessionState): Promise<void> {
+  state.leadDefaults.name = (await ask(rl, "Default lead name (blank=clear)")) || undefined;
+  state.leadDefaults.phone = (await ask(rl, "Default lead phone (blank=clear)")) || undefined;
+  state.leadDefaults.city = (await ask(rl, "Default lead city (blank=clear)")) || undefined;
+  state.leadDefaults.preferredLanguage = parsePreferredLanguage(
+    await ask(rl, "Default lead language [en|hi|hinglish] (blank=clear)")
+  );
+  // eslint-disable-next-line no-console
+  console.log("Lead defaults updated.");
+}
+
+async function runAgentTurn(rl: CliRl, state: SessionState, message: string): Promise<void> {
+  const request: ChatRequest = {
+    message,
+    recipient: state.recipient,
+    dryRun: state.dryRun,
+    model: state.model,
+    lead: {
+      message,
+      ...state.leadDefaults
+    }
+  };
+
+  const guardrail = evaluateGuardrails(request);
+  if (!guardrail.allow) {
+    // eslint-disable-next-line no-console
+    console.log(`Blocked: ${guardrail.reason || "Request blocked by guardrails."}`);
+    return;
+  }
+
+  const plan = planToolCalls(request.message);
+  if (plan.length === 0) {
+    const fallback = await suiteEngine.chat(request);
+    // eslint-disable-next-line no-console
+    console.log(`Assistant: ${fallback.assistantMessage}`);
+    if (fallback.suggestedNextPrompts.length > 0) {
+      // eslint-disable-next-line no-console
+      console.log("Try:");
+      for (const prompt of fallback.suggestedNextPrompts) {
+        // eslint-disable-next-line no-console
+        console.log(`  - ${prompt}`);
+      }
+    }
+    return;
+  }
+
+  printPlan(plan);
+
+  if (state.autonomy === 0) {
+    // eslint-disable-next-line no-console
+    console.log("Autonomy L0 (suggest-only): plan created, no tool executed.");
+    return;
+  }
+
+  const { results, recipient } = await executePlanWithApprovals(rl, plan, request, state);
+  state.recipient = recipient;
+  printExecutionSummary(results);
+}
+
+async function executePlanWithApprovals(
+  rl: CliRl,
+  plan: PlannedToolCall[],
+  request: ChatRequest,
+  state: SessionState
+): Promise<{ results: ToolExecutionRecord[]; recipient?: string }> {
+  const results: ToolExecutionRecord[] = [];
+  let mutableRequest: ChatRequest = { ...request };
+
+  for (const step of plan) {
+    if (step.tool === "send_whatsapp_followup" && !mutableRequest.recipient) {
+      const recipient = await ask(
+        rl,
+        "No recipient set. Enter E.164 to send now (leave blank for draft-only)"
+      );
+      mutableRequest = { ...mutableRequest, recipient: recipient || undefined };
+    }
+
+    const approval = await approveStep(rl, state, step.tool, mutableRequest);
+    if (!approval.allowed) {
+      const skipped: ToolExecutionRecord = {
+        tool: step.tool,
+        ok: false,
+        summary: `Skipped: ${approval.reason}`
+      };
+      results.push(skipped);
+      // eslint-disable-next-line no-console
+      console.log(`Skipped ${step.tool}: ${approval.reason}`);
+      continue;
+    }
+
+    const result = await executeStep(step, mutableRequest);
+    results.push(result);
+    // eslint-disable-next-line no-console
+    console.log(`[${result.ok ? "OK" : "FAIL"}] ${result.tool} - ${result.summary}`);
+
+    if (!result.ok) {
+      const shouldContinue = await askYesNo(rl, "Continue remaining plan steps? [default Y]", true);
+      if (!shouldContinue) break;
+    }
+  }
+
+  return { results, recipient: mutableRequest.recipient };
+}
+
+async function approveStep(
+  rl: CliRl,
+  state: SessionState,
+  tool: ToolName,
+  request: ChatRequest
+): Promise<{ allowed: boolean; reason?: string }> {
+  const isExternal = isExternalAction(tool, request);
+  const isLocalWrite = LOCAL_WRITE_TOOLS.includes(tool);
+
+  if (state.autonomy === 1 && isExternal) {
+    return {
+      allowed: false,
+      reason: "autonomy L1 blocks external actions (send/publish)."
+    };
+  }
+
+  if (isLocalWrite) {
+    const yes = await askYesNo(rl, `Approve local write step '${tool}'? [default N]`, false);
+    return yes
+      ? { allowed: true }
+      : { allowed: false, reason: "local write not approved by operator." };
+  }
+
+  if (state.autonomy === 2 && isExternal) {
+    const yes = await askYesNo(rl, `Approve external step '${tool}'? [default N]`, false);
+    return yes
+      ? { allowed: true }
+      : { allowed: false, reason: "external action not approved by operator." };
+  }
+
+  return { allowed: true };
+}
+
+function isExternalAction(tool: ToolName, request: ChatRequest): boolean {
+  if (!EXTERNAL_TOOLS.includes(tool)) return false;
+  if (tool === "send_whatsapp_followup") return Boolean(request.recipient);
+  return true;
+}
+
+async function executeStep(step: PlannedToolCall, request: ChatRequest): Promise<ToolExecutionRecord> {
+  switch (step.tool) {
+    case "post_to_99acres":
+      return runPostTo99Acres(request);
+    case "match_property_to_buyer":
+      return runMatchPropertyToBuyer(request);
+    case "group_requirement_match_scan":
+      return runGroupRequirementMatchScan(request);
+    case "ads_lead_qualification":
+      return runAdsLeadQualification(request);
+    case "send_whatsapp_followup":
+      return runSendWhatsappFollowup(request);
+    case "schedule_site_visit":
+      return runScheduleSiteVisit(request);
+    case "generate_performance_report":
+      return runGeneratePerformanceReport();
+    default:
+      return {
+        tool: step.tool,
+        ok: false,
+        summary: "Tool is not implemented."
+      };
+  }
+}
+
+function printPlan(plan: PlannedToolCall[]) {
+  // eslint-disable-next-line no-console
+  console.log("Plan:");
+  for (const [idx, step] of plan.entries()) {
+    // eslint-disable-next-line no-console
+    console.log(`  ${idx + 1}. ${step.tool} - ${step.reason}`);
+  }
+}
+
+function printExecutionSummary(results: ToolExecutionRecord[]) {
+  // eslint-disable-next-line no-console
+  console.log("\nExecution Summary:");
+  if (results.length === 0) {
+    // eslint-disable-next-line no-console
+    console.log("  (no steps executed)");
+    return;
+  }
+
+  const okCount = results.filter((item) => item.ok).length;
+  const failCount = results.length - okCount;
+  // eslint-disable-next-line no-console
+  console.log(`  Steps: ${results.length}, OK: ${okCount}, Fail/Skip: ${failCount}`);
+
+  for (const item of results) {
+    // eslint-disable-next-line no-console
+    console.log(`  - [${item.ok ? "OK" : "FAIL"}] ${item.tool}: ${item.summary}`);
+  }
+}
+
+function printSessionState(state: SessionState) {
+  // eslint-disable-next-line no-console
+  console.log(
+    JSON.stringify(
+      {
+        autonomy: state.autonomy,
+        dryRun: state.dryRun,
+        recipient: state.recipient || null,
+        model: state.model || null,
+        leadDefaults: state.leadDefaults,
+        turns: state.turns
+      },
+      null,
+      2
+    )
+  );
+}
+
+async function runSuiteAgentChat(rl: CliRl) {
+  // eslint-disable-next-line no-console
+  console.log("\n[Suite Agent Chat - One Shot]");
   const message = await askRequired(rl, "Message");
   const recipient = await ask(rl, "Recipient E.164 (optional)");
   const model = await ask(rl, "Model override (optional)");
@@ -116,7 +516,7 @@ async function runSuiteAgentChat(rl: ReturnType<typeof createInterface>) {
   }
 }
 
-async function runLeadOrchestrator(rl: ReturnType<typeof createInterface>) {
+async function runLeadOrchestrator(rl: CliRl) {
   // eslint-disable-next-line no-console
   console.log("\n[Lead Orchestrator]");
   const leadMessage = await askRequired(rl, "Lead message");
@@ -170,6 +570,46 @@ async function runLeadOrchestrator(rl: ReturnType<typeof createInterface>) {
   }
 }
 
+async function runTransportMenu(rl: CliRl) {
+  while (true) {
+    // eslint-disable-next-line no-console
+    console.log("\n[WhatsApp Transport Tools]");
+    // eslint-disable-next-line no-console
+    console.log("  1) Doctor");
+    // eslint-disable-next-line no-console
+    console.log("  2) Search Messages");
+    // eslint-disable-next-line no-console
+    console.log("  3) List Chats");
+    // eslint-disable-next-line no-console
+    console.log("  4) Send Manual Message");
+    // eslint-disable-next-line no-console
+    console.log("  5) Back");
+
+    const choice = await ask(rl, "Transport option");
+    if (choice === "1") {
+      await runWacliDoctor();
+      continue;
+    }
+    if (choice === "2") {
+      await runWacliSearch(rl);
+      continue;
+    }
+    if (choice === "3") {
+      await runWacliChats(rl);
+      continue;
+    }
+    if (choice === "4") {
+      await runManualSend(rl);
+      continue;
+    }
+    if (choice === "5" || choice === "back" || choice === "exit") {
+      return;
+    }
+    // eslint-disable-next-line no-console
+    console.log("Invalid option. Use 1-5.");
+  }
+}
+
 async function runWacliDoctor() {
   // eslint-disable-next-line no-console
   console.log("\n[WACLI Doctor]");
@@ -177,7 +617,7 @@ async function runWacliDoctor() {
   printWacliResult(result);
 }
 
-async function runWacliSearch(rl: ReturnType<typeof createInterface>) {
+async function runWacliSearch(rl: CliRl) {
   // eslint-disable-next-line no-console
   console.log("\n[WACLI Search Messages]");
   const query = await askRequired(rl, "Query");
@@ -188,7 +628,7 @@ async function runWacliSearch(rl: ReturnType<typeof createInterface>) {
   printWacliResult(result);
 }
 
-async function runWacliChats(rl: ReturnType<typeof createInterface>) {
+async function runWacliChats(rl: CliRl) {
   // eslint-disable-next-line no-console
   console.log("\n[WACLI List Chats]");
   const query = await ask(rl, "Query (optional)");
@@ -198,7 +638,7 @@ async function runWacliChats(rl: ReturnType<typeof createInterface>) {
   printWacliResult(result);
 }
 
-async function runManualSend(rl: ReturnType<typeof createInterface>) {
+async function runManualSend(rl: CliRl) {
   // eslint-disable-next-line no-console
   console.log("\n[WACLI Send Text]");
   const to = await askRequired(rl, "Recipient E.164");
@@ -233,7 +673,7 @@ function printWacliResult(result: {
 }
 
 async function askLeadContext(
-  rl: ReturnType<typeof createInterface>,
+  rl: CliRl,
   messageFallback: string
 ): Promise<LeadInput | undefined> {
   const addContext = await askYesNo(rl, "Add structured lead context? [default N]", false);
@@ -265,17 +705,25 @@ function parsePreferredLanguage(raw: string): PreferredLanguage | undefined {
   return undefined;
 }
 
+function parseBoolean(raw: string): boolean | null {
+  const normalized = raw.trim().toLowerCase();
+  if (!normalized) return null;
+  if (["true", "1", "yes", "y", "on"].includes(normalized)) return true;
+  if (["false", "0", "no", "n", "off"].includes(normalized)) return false;
+  return null;
+}
+
 function parseLimit(raw: string, fallback: number): number {
   const parsed = Number(raw.trim());
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
   return Math.floor(parsed);
 }
 
-async function ask(rl: ReturnType<typeof createInterface>, label: string): Promise<string> {
+async function ask(rl: CliRl, label: string): Promise<string> {
   return (await rl.question(`${label}: `)).trim();
 }
 
-async function askRequired(rl: ReturnType<typeof createInterface>, label: string): Promise<string> {
+async function askRequired(rl: CliRl, label: string): Promise<string> {
   while (true) {
     const value = await ask(rl, label);
     if (value.length > 0) return value;
@@ -285,7 +733,7 @@ async function askRequired(rl: ReturnType<typeof createInterface>, label: string
 }
 
 async function askYesNo(
-  rl: ReturnType<typeof createInterface>,
+  rl: CliRl,
   label: string,
   defaultValue: boolean
 ): Promise<boolean> {
@@ -307,23 +755,54 @@ function printBanner() {
   console.log("====================================\n");
 }
 
+function printAgenticHelp() {
+  // eslint-disable-next-line no-console
+  console.log("\n[Agentic Session]");
+  // eslint-disable-next-line no-console
+  console.log("Natural language requests execute in a stateful loop with approvals.");
+  // eslint-disable-next-line no-console
+  console.log("Commands:");
+  // eslint-disable-next-line no-console
+  console.log("  /help");
+  // eslint-disable-next-line no-console
+  console.log("  /state");
+  // eslint-disable-next-line no-console
+  console.log("  /set autonomy <0|1|2>");
+  // eslint-disable-next-line no-console
+  console.log("  /set dryrun <on|off>");
+  // eslint-disable-next-line no-console
+  console.log("  /set recipient <+E164|none>");
+  // eslint-disable-next-line no-console
+  console.log("  /set model <model-id|none>");
+  // eslint-disable-next-line no-console
+  console.log("  /set name <text>");
+  // eslint-disable-next-line no-console
+  console.log("  /set phone <text>");
+  // eslint-disable-next-line no-console
+  console.log("  /set city <text>");
+  // eslint-disable-next-line no-console
+  console.log("  /set lang <en|hi|hinglish>");
+  // eslint-disable-next-line no-console
+  console.log("  /set wizard");
+  // eslint-disable-next-line no-console
+  console.log("  /clear");
+  // eslint-disable-next-line no-console
+  console.log("  /back");
+}
+
 function printMenu() {
   // eslint-disable-next-line no-console
   console.log("Menu");
   // eslint-disable-next-line no-console
-  console.log("  1) Suite Agent Chat (multi-tool planner)");
+  console.log("  1) Agentic Session (stateful + approvals)");
   // eslint-disable-next-line no-console
-  console.log("  2) Lead Orchestrator (intake + match + follow-up)");
+  console.log("  2) Suite Agent Chat (one-shot)");
   // eslint-disable-next-line no-console
-  console.log("  3) WACLI Doctor");
+  console.log("  3) Lead Orchestrator (one-shot)");
   // eslint-disable-next-line no-console
-  console.log("  4) WACLI Search Messages");
+  console.log("  4) WhatsApp Transport Tools");
   // eslint-disable-next-line no-console
-  console.log("  5) WACLI List Chats");
-  // eslint-disable-next-line no-console
-  console.log("  6) WACLI Send Manual Message");
-  // eslint-disable-next-line no-console
-  console.log("  7) Exit");
+  console.log("  5) Exit");
 }
 
 function indentBlock(value: string, spaces: number): string {
