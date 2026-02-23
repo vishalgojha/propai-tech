@@ -520,6 +520,20 @@ async function buildAssistantReply(
 function buildNoPlanReply(message: string, state: SessionState): string {
   const text = message.trim().toLowerCase();
 
+  if (/^(whoami|who am i)\??$/.test(text)) {
+    const operator = process.env.USERNAME || process.env.USER || "operator";
+    return [
+      `You are ${operator} using PropAI Terminal.`,
+      "Role: real-estate ops copilot (chat + tool execution).",
+      `Session: autonomy=${state.autonomy}, dryRun=${state.dryRun}, recipient=${state.recipient || "(none)"}.`,
+      "Use '/state' for full session details."
+    ].join("\n");
+  }
+
+  if (/\b(who are you|what are you)\b/.test(text)) {
+    return "I am PropAI Terminal, a real-estate copilot that can chat, plan actions, and run approved workflows.";
+  }
+
   if (/^(hi|hello|hey|namaste)\b/.test(text)) {
     return "Hi. I can chat here and also run workflows. Tell me one goal like: 'qualify this lead', 'scan broker requirement and shortlist', or 'generate performance report'.";
   }
