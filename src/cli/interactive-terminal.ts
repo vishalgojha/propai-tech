@@ -267,6 +267,12 @@ async function runLeadDefaultWizard(rl: CliRl, state: SessionState): Promise<voi
 }
 
 async function runAgentTurn(rl: CliRl, state: SessionState, message: string): Promise<void> {
+  const directMsg = parseDirectSendCommand(message);
+  if (directMsg) {
+    const handled = await runDirectSendCommand(rl, state, message, directMsg);
+    if (handled) return;
+  }
+
   const request: ChatRequest = {
     message,
     recipient: state.recipient,
@@ -317,6 +323,70 @@ async function runAgentTurn(rl: CliRl, state: SessionState, message: string): Pr
   const reply = await buildAssistantReply(state, request, plan, results, turnNote.join(" "));
   printAssistantReply(reply);
   pushHistory(state, message, reply);
+}
+
+type DirectSendCommand = {
+  to: string;
+  body?: string;
+};
+
+function parseDirectSendCommand(raw: string): DirectSendCommand | null {
+  const match = raw
+    .trim()
+    .match(/^(?:msg|message|send)\s+([+]?\d[\d\s-]{7,20})(?:\s+([\s\S]+))?$/i);
+  if (!match) return null;
+
+  const toDigits = match[1].replace(/[^\d]/g, "");
+  if (toDigits.length < 8 || toDigits.length > 15) return null;
+  const to = `+${toDigits}`;
+  const body = match[2]?.trim();
+  return {
+    to,
+    body: body && body.length > 0 ? body : undefined
+  };
+}
+
+async function runDirectSendCommand(
+  rl: CliRl,
+  state: SessionState,
+  originalMessage: string,
+  command: DirectSendCommand
+): Promise<boolean> {
+  if (!command.body) {
+    const reply =
+      "Send format: `msg <phone> <message>`. Example: `msg +919820056180 Hi, sharing 2 options in Wakad today.`";
+    printAssistantReply(reply);
+    pushHistory(state, originalMessage, reply);
+    return true;
+  }
+
+  if (state.autonomy < 2) {
+    const reply =
+      "Direct send is blocked at current autonomy. Use `/set autonomy 2` and retry to allow per-message approval.";
+    printAssistantReply(reply);
+    pushHistory(state, originalMessage, reply);
+    return true;
+  }
+
+  const approved = await askYesNo(
+    rl,
+    `Approve direct send to ${command.to}? [default N]`,
+    false
+  );
+  if (!approved) {
+    const reply = "Direct send skipped: not approved.";
+    printAssistantReply(reply);
+    pushHistory(state, originalMessage, reply);
+    return true;
+  }
+
+  const result = await orchestrator.sendManualMessage(command.to, command.body);
+  const reply = result.ok
+    ? `Message sent to ${command.to}.`
+    : `Send failed for ${command.to}. ${result.stderr || "Check wacli and session status."}`;
+  printAssistantReply(reply);
+  pushHistory(state, originalMessage, reply);
+  return true;
 }
 
 async function executePlanWithApprovals(
@@ -528,7 +598,7 @@ function buildNoPlanReply(message: string, state: SessionState): string {
     ].join("\n");
   }
 
-  if (/\b(who are you|what are you)\b/.test(text)) {
+  if (/\b(who are you|what are you|who is this)\b/.test(text)) {
     return "I am PropAI Terminal, a real-estate copilot that can chat, plan actions, and run approved workflows.";
   }
 
@@ -537,7 +607,7 @@ function buildNoPlanReply(message: string, state: SessionState): string {
   }
 
   if (
-    /\b(what can you do|capabilities|help|menu|options|commands|how can you help)\b/.test(text)
+    /\b(what can you do|what can you|capabilities|help|menu|options|commands|how can you help)\b/.test(text)
   ) {
     return [
       "I can do both chat and execution:",

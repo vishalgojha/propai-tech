@@ -291,7 +291,7 @@ curl -X POST http://localhost:8080/whatsapp/pairing/approve \
 - `OLLAMA_ENABLED` (default `auto`; set `true` to force local Ollama attempts, `false` to disable)
 - `OLLAMA_BASE_URL` (default `http://127.0.0.1:11434`)
 - `OLLAMA_MODEL` (default `llama3.1:8b`)
-- `OLLAMA_TIMEOUT_MS` (default `2500`)
+- `OLLAMA_TIMEOUT_MS` (default `12000`)
 - `WACLI_DRY_RUN` (default: `true`)
 - `WACLI_BIN` (default: `wacli`)
 
