@@ -121,6 +121,7 @@ Notes:
 - `WACLI_DRY_RUN=true` remains safest for testing.
 - In agentic session, run `/help` to list commands.
 - In agentic session, type normal chat messages directly at `propai:` (no slash command needed).
+- LLM provider order is: OpenRouter (if configured) -> Ollama local -> deterministic fallback.
 
 ## Tests
 
@@ -287,6 +288,10 @@ curl -X POST http://localhost:8080/whatsapp/pairing/approve \
 - `OPENROUTER_BASE_URL` (default `https://openrouter.ai/api/v1`)
 - `OPENROUTER_TIMEOUT_MS` (default `30000`)
 - `OPENROUTER_APP_NAME` / `OPENROUTER_APP_URL` (metadata headers for OpenRouter)
+- `OLLAMA_ENABLED` (default `auto`; set `true` to force local Ollama attempts, `false` to disable)
+- `OLLAMA_BASE_URL` (default `http://127.0.0.1:11434`)
+- `OLLAMA_MODEL` (default `llama3.1:8b`)
+- `OLLAMA_TIMEOUT_MS` (default `2500`)
 - `WACLI_DRY_RUN` (default: `true`)
 - `WACLI_BIN` (default: `wacli`)
 

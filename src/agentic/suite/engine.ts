@@ -8,7 +8,7 @@ import {
   runScheduleSiteVisit,
   runSendWhatsappFollowup
 } from "./toolkit.js";
-import { generateOpenRouterText } from "../../llm/openrouter.js";
+import { generateAssistantText } from "../../llm/chat.js";
 import { evaluateGuardrails } from "./guardrails.js";
 import { getSuiteStore } from "./store.js";
 import type { ChatRequest, ChatResponse, PlannedToolCall, ToolExecutionRecord } from "./types.js";
@@ -104,7 +104,7 @@ async function buildAssistantMessage(
   plan: PlannedToolCall[],
   results: ToolExecutionRecord[]
 ): Promise<string> {
-  const llmMessage = await generateOpenRouterText(
+  const llm = await generateAssistantText(
     [
       {
         role: "system",
@@ -126,8 +126,8 @@ async function buildAssistantMessage(
     }
   );
 
-  if (llmMessage) {
-    return llmMessage;
+  if (llm.text) {
+    return llm.text;
   }
 
   const ran = plan.map((step) => step.tool).join(", ");

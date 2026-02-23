@@ -5,7 +5,7 @@ import { RealtorOrchestrator } from "../agentic/agents/orchestrator.js";
 import { evaluateGuardrails } from "../agentic/suite/guardrails.js";
 import { planToolCalls } from "../agentic/suite/planner.js";
 import { RealtorSuiteAgentEngine } from "../agentic/suite/engine.js";
-import { generateOpenRouterText, isOpenRouterEnabled } from "../llm/openrouter.js";
+import { generateAssistantText } from "../llm/chat.js";
 import {
   runAdsLeadQualification,
   runGeneratePerformanceReport,
@@ -469,37 +469,35 @@ async function buildAssistantReply(
   results: ToolExecutionRecord[],
   note: string
 ): Promise<string> {
-  if (isOpenRouterEnabled()) {
-    const context = {
-      autonomy: state.autonomy,
-      dryRun: state.dryRun,
-      recipient: request.recipient || null,
-      plan: plan.map((item) => ({ tool: item.tool, reason: item.reason })),
-      results: results.map((item) => ({ tool: item.tool, ok: item.ok, summary: item.summary })),
-      note
-    };
+  const context = {
+    autonomy: state.autonomy,
+    dryRun: state.dryRun,
+    recipient: request.recipient || null,
+    plan: plan.map((item) => ({ tool: item.tool, reason: item.reason })),
+    results: results.map((item) => ({ tool: item.tool, ok: item.ok, summary: item.summary })),
+    note
+  };
 
-    const llm = await generateOpenRouterText(
-      [
-        {
-          role: "system",
-          content:
-            "You are PropAI terminal copilot. Reply like a live chat assistant in plain concise language. Confirm understanding, summarize what was planned/executed/skipped, respect autonomy and approvals, and end with one practical next action or one short question."
-        },
-        ...state.history.slice(-12),
-        { role: "user", content: request.message },
-        { role: "user", content: `Execution context: ${JSON.stringify(context)}` }
-      ],
+  const llm = await generateAssistantText(
+    [
       {
-        model: request.model,
-        temperature: 0.2,
-        maxTokens: 220
-      }
-    );
-
-    if (llm && llm.trim()) {
-      return llm.trim();
+        role: "system",
+        content:
+          "You are PropAI terminal copilot. Reply like a live chat assistant in plain concise language. Confirm understanding, summarize what was planned/executed/skipped, respect autonomy and approvals, and end with one practical next action or one short question."
+      },
+      ...state.history.slice(-12),
+      { role: "user", content: request.message },
+      { role: "user", content: `Execution context: ${JSON.stringify(context)}` }
+    ],
+    {
+      model: request.model,
+      temperature: 0.2,
+      maxTokens: 220
     }
+  );
+
+  if (llm.text && llm.text.trim()) {
+    return llm.text.trim();
   }
 
   if (/guardrail/i.test(note)) {
