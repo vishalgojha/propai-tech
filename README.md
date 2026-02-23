@@ -120,6 +120,7 @@ Notes:
 - Uses `.env` values (including `WACLI_DRY_RUN`, `WACLI_BIN`).
 - `WACLI_DRY_RUN=true` remains safest for testing.
 - In agentic session, run `/help` to list commands.
+- In agentic session, run `/llm` to inspect live provider/model status.
 - In agentic session, type normal chat messages directly at `propai:` (no slash command needed).
 - LLM provider order is: OpenRouter (if configured) -> Ollama local -> deterministic fallback.
 

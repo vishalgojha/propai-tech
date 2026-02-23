@@ -6,6 +6,8 @@ import { evaluateGuardrails } from "../agentic/suite/guardrails.js";
 import { planToolCalls } from "../agentic/suite/planner.js";
 import { RealtorSuiteAgentEngine } from "../agentic/suite/engine.js";
 import { generateAssistantText } from "../llm/chat.js";
+import { getOllamaStatus } from "../llm/ollama.js";
+import { isOpenRouterEnabled } from "../llm/openrouter.js";
 import {
   runAdsLeadQualification,
   runGeneratePerformanceReport,
@@ -139,6 +141,11 @@ async function handleSessionCommand(rl: CliRl, state: SessionState, raw: string)
 
   if (cmd === "state") {
     printSessionState(state);
+    return false;
+  }
+
+  if (cmd === "llm") {
+    await printLlmStatus();
     return false;
   }
 
@@ -659,6 +666,26 @@ function printSessionState(state: SessionState) {
   );
 }
 
+async function printLlmStatus() {
+  const ollama = await getOllamaStatus();
+  const openrouter = isOpenRouterEnabled();
+
+  // eslint-disable-next-line no-console
+  console.log("LLM Status");
+  // eslint-disable-next-line no-console
+  console.log(`  OpenRouter: ${openrouter ? "enabled" : "disabled"}`);
+  // eslint-disable-next-line no-console
+  console.log(
+    `  Ollama: ${ollama.enabled ? "enabled" : "disabled"} | reachable=${ollama.reachable} | base=${ollama.baseUrl}`
+  );
+  // eslint-disable-next-line no-console
+  console.log(`  Ollama selected model: ${ollama.selectedModel}`);
+  if (ollama.availableModels.length > 0) {
+    // eslint-disable-next-line no-console
+    console.log(`  Ollama models: ${ollama.availableModels.join(", ")}`);
+  }
+}
+
 async function runSuiteAgentChat(rl: CliRl) {
   // eslint-disable-next-line no-console
   console.log("\n[Suite Agent Chat - One Shot]");
@@ -971,6 +998,8 @@ function printAgenticHelp() {
   console.log("  /help");
   // eslint-disable-next-line no-console
   console.log("  /state");
+  // eslint-disable-next-line no-console
+  console.log("  /llm");
   // eslint-disable-next-line no-console
   console.log("  /set autonomy <0|1|2>");
   // eslint-disable-next-line no-console

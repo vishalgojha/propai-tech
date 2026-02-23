@@ -24,6 +24,7 @@ type AvailabilityState = {
 };
 
 let availability: AvailabilityState | null = null;
+let discoveredModel: string | null = null;
 
 function config(): OllamaConfig {
   const modeRaw = String(process.env.OLLAMA_ENABLED || "auto").toLowerCase();
@@ -52,21 +53,25 @@ export async function generateOllamaText(
   }
 
   try {
-    const body: Record<string, unknown> = {
-      model: options.model || cfg.defaultModel,
-      messages,
-      stream: false,
-      options: {
-        temperature: options.temperature ?? 0.2
+    const selectedModel = options.model || discoveredModel || cfg.defaultModel;
+    let payload: any;
+    try {
+      payload = await callOllama(buildRequestBody(messages, selectedModel, options), cfg);
+    } catch (error) {
+      if (isModelNotFoundError(error)) {
+        const fallbackModel = await pickFallbackModel(cfg, selectedModel);
+        if (!fallbackModel) {
+          throw error;
+        }
+        payload = await callOllama(buildRequestBody(messages, fallbackModel, options), cfg);
+        if (!options.model) {
+          discoveredModel = fallbackModel;
+        }
+      } else {
+        throw error;
       }
-    };
-
-    if (options.maxTokens) {
-      const opts = body.options as Record<string, unknown>;
-      opts.num_predict = options.maxTokens;
     }
 
-    const payload = await callOllama(body, cfg);
     const content = payload?.message?.content;
     if (typeof content === "string" && content.trim()) {
       availability = { reachable: true, checkedAtMs: Date.now() };
@@ -78,6 +83,50 @@ export async function generateOllamaText(
   } catch {
     availability = { reachable: false, checkedAtMs: Date.now() };
     return null;
+  }
+}
+
+export async function getOllamaStatus(): Promise<{
+  enabled: boolean;
+  baseUrl: string;
+  selectedModel: string;
+  reachable: boolean;
+  availableModels: string[];
+}> {
+  const cfg = config();
+  const selectedModel = discoveredModel || cfg.defaultModel;
+  if (!isOllamaEnabled()) {
+    return {
+      enabled: false,
+      baseUrl: cfg.baseUrl,
+      selectedModel,
+      reachable: false,
+      availableModels: []
+    };
+  }
+
+  try {
+    const models = await listModels(cfg);
+    availability = { reachable: true, checkedAtMs: Date.now() };
+    if (!discoveredModel && models.length > 0 && !models.includes(cfg.defaultModel)) {
+      discoveredModel = models[0];
+    }
+    return {
+      enabled: true,
+      baseUrl: cfg.baseUrl,
+      selectedModel: discoveredModel || cfg.defaultModel,
+      reachable: true,
+      availableModels: models
+    };
+  } catch {
+    availability = { reachable: false, checkedAtMs: Date.now() };
+    return {
+      enabled: true,
+      baseUrl: cfg.baseUrl,
+      selectedModel,
+      reachable: false,
+      availableModels: []
+    };
   }
 }
 
@@ -111,4 +160,61 @@ async function callOllama(body: unknown, cfg: OllamaConfig): Promise<any> {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function buildRequestBody(
+  messages: OllamaMessage[],
+  model: string,
+  options: OllamaChatOptions
+): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    model,
+    messages,
+    stream: false,
+    options: {
+      temperature: options.temperature ?? 0.2
+    }
+  };
+
+  if (options.maxTokens) {
+    const opts = body.options as Record<string, unknown>;
+    opts.num_predict = options.maxTokens;
+  }
+
+  return body;
+}
+
+async function pickFallbackModel(cfg: OllamaConfig, currentModel: string): Promise<string | null> {
+  const models = await listModels(cfg);
+  if (models.length === 0) return null;
+  const firstDifferent = models.find((model) => model !== currentModel);
+  return firstDifferent || models[0];
+}
+
+async function listModels(cfg: OllamaConfig): Promise<string[]> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), cfg.timeoutMs);
+  try {
+    const response = await fetch(`${cfg.baseUrl.replace(/\/+$/, "")}/api/tags`, {
+      method: "GET",
+      signal: controller.signal
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Ollama tags request failed (${response.status}): ${text}`);
+    }
+    const payload = await response.json();
+    const models = Array.isArray(payload?.models) ? payload.models : [];
+    return models
+      .map((entry: any) => (typeof entry?.name === "string" ? entry.name.trim() : ""))
+      .filter((name: string) => Boolean(name));
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function isModelNotFoundError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const text = error.message.toLowerCase();
+  return text.includes("model") && (text.includes("not found") || text.includes("does not exist"));
 }
