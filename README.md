@@ -94,6 +94,23 @@ Python template decision (`realtor-suite-agent.py`):
 5. Open frontend console:
    - `http://localhost:8080/app`
 
+## Interactive Terminal
+
+Run the interactive operator CLI:
+
+- `npm run terminal`
+
+Menu capabilities:
+
+- Suite agent chat (`RealtorSuiteAgentEngine`)
+- Lead orchestrator flow (intake + matching + follow-up)
+- WACLI doctor/search/chats/send actions
+
+Notes:
+
+- Uses `.env` values (including `WACLI_DRY_RUN`, `WACLI_BIN`).
+- `WACLI_DRY_RUN=true` remains safest for testing.
+
 ## Tests
 
 - Run: `npm test`

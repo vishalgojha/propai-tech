@@ -10,7 +10,8 @@
     "test": "npm run build && node dist/tests/run-tests.js",
     "start": "node dist/agentic-app.js",
     "start:legacy": "node dist/index.js",
-    "openrouter:chat": "tsx src/cli/openrouter-chat.ts"
+    "openrouter:chat": "tsx src/cli/openrouter-chat.ts",
+    "terminal": "tsx src/cli/interactive-terminal.ts"
   },
   "dependencies": {
     "@wppconnect-team/wppconnect": "^1.31.0",
