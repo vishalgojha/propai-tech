@@ -96,9 +96,13 @@ Python template decision (`realtor-suite-agent.py`):
 
 ## Interactive Terminal
 
-Run the interactive operator CLI:
+Run the codex-style real-estate terminal:
 
 - `npm run terminal`
+
+Optional: classic menu mode
+
+- `npm run terminal -- --menu`
 
 Menu capabilities:
 
@@ -116,7 +120,7 @@ Notes:
 - Uses `.env` values (including `WACLI_DRY_RUN`, `WACLI_BIN`).
 - `WACLI_DRY_RUN=true` remains safest for testing.
 - In agentic session, run `/help` to list commands.
-- In agentic session, type normal chat messages directly at `agent:` (no slash command needed).
+- In agentic session, type normal chat messages directly at `propai:` (no slash command needed).
 
 ## Tests
 

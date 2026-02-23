@@ -46,40 +46,49 @@ const orchestrator = new RealtorOrchestrator();
 
 async function main() {
   const rl = createInterface({ input, output });
-  printBanner();
+  const menuMode = process.argv.includes("--menu");
+  printBanner(menuMode ? "menu" : "shell");
 
   try {
-    while (true) {
-      printMenu();
-      const choice = await ask(rl, "Select option");
-
-      switch (choice) {
-        case "1":
-          await runAgenticSession(rl);
-          break;
-        case "2":
-          await runSuiteAgentChat(rl);
-          break;
-        case "3":
-          await runLeadOrchestrator(rl);
-          break;
-        case "4":
-          await runTransportMenu(rl);
-          break;
-        case "5":
-        case "q":
-        case "quit":
-        case "exit":
-          // eslint-disable-next-line no-console
-          console.log("\nExiting PropAI interactive terminal.");
-          return;
-        default:
-          // eslint-disable-next-line no-console
-          console.log("Invalid option. Use 1-5.");
-      }
+    if (menuMode) {
+      await runClassicMenu(rl);
+      return;
     }
+    await runAgenticSession(rl);
   } finally {
     rl.close();
+  }
+}
+
+async function runClassicMenu(rl: CliRl) {
+  while (true) {
+    printMenu();
+    const choice = await ask(rl, "Select option");
+
+    switch (choice) {
+      case "1":
+        await runAgenticSession(rl);
+        break;
+      case "2":
+        await runSuiteAgentChat(rl);
+        break;
+      case "3":
+        await runLeadOrchestrator(rl);
+        break;
+      case "4":
+        await runTransportMenu(rl);
+        break;
+      case "5":
+      case "q":
+      case "quit":
+      case "exit":
+        // eslint-disable-next-line no-console
+        console.log("\nExiting PropAI interactive terminal.");
+        return;
+      default:
+        // eslint-disable-next-line no-console
+        console.log("Invalid option. Use 1-5.");
+    }
   }
 }
 
@@ -97,7 +106,7 @@ async function runAgenticSession(rl: CliRl) {
   printAgenticHelp();
 
   while (true) {
-    const raw = await ask(rl, "agent");
+    const raw = await ask(rl, "propai");
     if (!raw) continue;
 
     if (raw.startsWith("/")) {
@@ -856,11 +865,13 @@ async function askYesNo(
   return defaultValue;
 }
 
-function printBanner() {
+function printBanner(mode: "shell" | "menu") {
   // eslint-disable-next-line no-console
   console.log("====================================");
   // eslint-disable-next-line no-console
-  console.log("PropAI Interactive Terminal");
+  console.log("PropAI Terminal");
+  // eslint-disable-next-line no-console
+  console.log(`Mode: ${mode === "shell" ? "codex-style shell" : "classic menu"}`);
   // eslint-disable-next-line no-console
   console.log(`WACLI_DRY_RUN default: ${DEFAULT_DRY_RUN ? "true" : "false"}`);
   // eslint-disable-next-line no-console
@@ -871,7 +882,7 @@ function printAgenticHelp() {
   // eslint-disable-next-line no-console
   console.log("\n[Agentic Session]");
   // eslint-disable-next-line no-console
-  console.log("Natural language requests execute in a stateful loop with approvals.");
+  console.log("Type normal chat messages at 'propai:' and I will respond or execute workflows.");
   // eslint-disable-next-line no-console
   console.log("Commands:");
   // eslint-disable-next-line no-console
@@ -899,7 +910,9 @@ function printAgenticHelp() {
   // eslint-disable-next-line no-console
   console.log("  /clear");
   // eslint-disable-next-line no-console
-  console.log("  /back");
+  console.log("  /back (exit shell)");
+  // eslint-disable-next-line no-console
+  console.log("Tip: run with '--menu' for the old option menu.");
 }
 
 function printMenu() {
