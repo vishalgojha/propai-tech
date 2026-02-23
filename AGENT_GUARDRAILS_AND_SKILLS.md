@@ -26,6 +26,22 @@
   - `data.nextAction`: operator action
   - `data.requirement`: parsed requirement object
 
+## Installed Modular Skills
+
+The repository includes a reusable modular skill pack in `skills/`:
+
+- `message-parser`
+- `lead-extractor`
+- `india-location-normalizer`
+- `sentiment-priority-scorer`
+- `summary-generator`
+- `action-suggester`
+- `lead-storage`
+
+Preferred execution order:
+
+`message-parser -> lead-extractor -> india-location-normalizer -> sentiment-priority-scorer -> summary-generator -> action-suggester -> supervisor-confirmed lead-storage`
+
 ## Guardrails
 
 Hard blocks:

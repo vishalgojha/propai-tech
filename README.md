@@ -21,6 +21,36 @@ This repo now includes a tool-planned chat endpoint (`POST /agent/chat`) that ca
 - `group_requirement_match_scan` (monitor broker-group requirement text and shortlist matching properties)
 - `ads_lead_qualification` (score ad leads hot/warm/cold and return next action)
 
+## New: Modular Skill Pack (`skills/`)
+
+This repo now includes a ClawHub-compatible skill suite under `skills/`:
+
+- `message-parser`
+- `lead-extractor`
+- `india-location-normalizer`
+- `sentiment-priority-scorer`
+- `summary-generator`
+- `action-suggester`
+- `lead-storage`
+
+Recommended chain:
+
+```text
+message-parser
+  -> lead-extractor
+  -> india-location-normalizer
+  -> sentiment-priority-scorer
+  -> summary-generator
+  -> action-suggester
+  -> (Supervisor approval)
+  -> lead-storage
+```
+
+Notes:
+- Skills are separated by permission boundary (read-only analysis vs confirmed writes).
+- `lead-storage` requires supervisor confirmation token for writes.
+- Current evaluation mode is broker-group oriented (`dataset_mode=broker_group`) with explicit `record_type` handling.
+
 ## Guardrails (enforced in `/agent/chat`)
 
 - Blocks requests that attempt PII scraping/export (phone/contact/personal data leakage).
