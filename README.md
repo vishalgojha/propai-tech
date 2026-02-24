@@ -117,8 +117,8 @@ Python template decision (`realtor-suite-agent.py`):
 
 To avoid Windows/WSL path and line-ending drift, use this as the default local workflow:
 
-1. Use Node `20.x` (`.node-version`, `package.json.engines`).
-2. Use npm `10.x`.
+1. Use Node `25.x` (`.node-version`, `package.json.engines`).
+2. Use npm `11.x`.
 3. Use PowerShell from repo root (`C:\Users\visha\propai-tech`).
 4. Run:
    - `npm install`

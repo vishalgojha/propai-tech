@@ -251,8 +251,8 @@ try {
   $nodeVersion = (& node --version).Trim()
   Write-Info "Node detected: $nodeVersion"
   $nodeMajor = Get-NodeMajor -NodeVersion $nodeVersion
-  if ($null -ne $nodeMajor -and ($nodeMajor -lt 20 -or $nodeMajor -gt 22)) {
-    Write-WarnLine "Node $nodeVersion is outside tested range (20.x-22.x). Recommended: Node 20.x."
+  if ($null -ne $nodeMajor -and ($nodeMajor -lt 25 -or $nodeMajor -gt 25)) {
+    Write-WarnLine "Node $nodeVersion is outside tested range (25.x). Recommended: Node 25.x."
   }
 
   if (-not $FromSource) {
