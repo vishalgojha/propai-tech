@@ -4,6 +4,37 @@ Date: 2026-02-24
 Project root: `C:\Users\visha\propai-tech`  
 Branch: `main`
 
+## Update - 2026-02-24 (Node 25 runtime alignment)
+
+Issue addressed:
+
+- Local and CI environment had drift against runtime constraints (project targeted Node 20.x while operator environment is Node 25.x).
+
+Changes made:
+
+- `package.json`
+  - `engines.node`: `>=25 <26`
+  - `packageManager`: `npm@11`
+- `.node-version`
+  - updated to `25`
+- `.github/workflows/ci.yml`
+  - `actions/setup-node` changed to `node-version: "25"`
+- `README.md`
+  - canonical dev path updated to Node `25.x` and npm `11.x`
+- `install/install-propai.ps1`
+  - installer tested-range warning now targets `25.x`
+
+Git state:
+
+- Commit: `13dbd23` (`chore: align project runtime to node 25`)
+- Pushed: `origin/main` (2026-02-24)
+- Working tree at push time: clean
+
+Validation notes:
+
+- Runtime/version metadata was aligned across package config, CI, local version file, docs, and installer.
+- Full `npm ci`/`npm test` execution was not re-run in this pass after the Node 25 metadata change.
+
 ## Update - 2026-02-24 (npm ci registry fix)
 
 Issue addressed:
