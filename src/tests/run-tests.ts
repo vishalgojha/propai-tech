@@ -107,6 +107,11 @@ const tests: TestCase[] = [
             assistantMessage: string;
             plan: Array<{ tool: string; reason: string }>;
             toolResults: Array<{ tool: string; ok: boolean; summary: string }>;
+            events: Array<{
+              type: string;
+              status: string;
+              timestampIso: string;
+            }>;
             suggestedNextPrompts: string[];
           };
         };
@@ -115,7 +120,35 @@ const tests: TestCase[] = [
         assert.equal(typeof payload.result.assistantMessage, "string");
         assert.ok(Array.isArray(payload.result.plan));
         assert.ok(Array.isArray(payload.result.toolResults));
+        assert.ok(Array.isArray(payload.result.events));
         assert.ok(Array.isArray(payload.result.suggestedNextPrompts));
+      });
+    }
+  },
+  {
+    name: "/connectors/health returns connector snapshot contract",
+    run: async () => {
+      await withServer(async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/connectors/health`, {
+          method: "GET"
+        });
+        assert.equal(response.status, 200);
+
+        const payload = (await response.json()) as {
+          ok: boolean;
+          result: {
+            generatedAtIso: string;
+            credentials: unknown[];
+            pairs: unknown[];
+            connectors: unknown[];
+          };
+        };
+
+        assert.equal(payload.ok, true);
+        assert.equal(typeof payload.result.generatedAtIso, "string");
+        assert.ok(Array.isArray(payload.result.credentials));
+        assert.ok(Array.isArray(payload.result.pairs));
+        assert.ok(Array.isArray(payload.result.connectors));
       });
     }
   },

@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "propai": "dist/cli/propai.js"
+  },
   "scripts": {
     "dev": "tsx src/agentic-app.ts",
     "dev:legacy": "tsx src/index.ts",
@@ -11,12 +14,19 @@
     "start": "node dist/agentic-app.js",
     "start:legacy": "node dist/index.js",
     "openrouter:chat": "tsx src/cli/openrouter-chat.ts",
-    "terminal": "tsx src/cli/interactive-terminal.ts"
+    "propai": "tsx src/cli/propai.ts",
+    "install:oneclick": "powershell -NoProfile -ExecutionPolicy Bypass -File ./install/install-propai.ps1 -FromSource",
+    "terminal": "tsx src/cli/propai-termui.ts",
+    "terminal:classic": "tsx src/cli/interactive-terminal.ts",
+    "terminal:menu": "tsx src/cli/interactive-terminal.ts --menu",
+    "terminal:tui": "tsx src/cli/propai-termui.ts"
   },
   "dependencies": {
+    "@vue-termui/core": "^0.2.0",
     "@wppconnect-team/wppconnect": "^1.31.0",
     "dotenv": "^16.4.5",
-    "pg": "^8.18.0"
+    "pg": "^8.18.0",
+    "vue": "^3.5.13"
   },
   "devDependencies": {
     "@types/node": "^20.12.7",

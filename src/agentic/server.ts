@@ -7,6 +7,7 @@ import { loadRuntimeConfigOrThrow, type RuntimeConfig } from "./runtime-config.j
 import { RealtorSuiteAgentEngine } from "./suite/engine.js";
 import type { ChatRequest } from "./suite/types.js";
 import { getPairingStore } from "./whatsapp/inbound/pairing-store.js";
+import { getConnectorHealthSnapshot } from "./connectors/health.js";
 
 const orchestrator = new RealtorOrchestrator();
 const suiteEngine = new RealtorSuiteAgentEngine();
@@ -76,6 +77,12 @@ async function route(req: IncomingMessage, res: ServerResponse, runtimeConfig: R
 
   if (method === "GET" && path === "/properties") {
     sendJson(res, 200, { ok: true, properties: INDIAN_PROPERTIES });
+    return;
+  }
+
+  if (method === "GET" && path === "/connectors/health") {
+    const snapshot = await getConnectorHealthSnapshot();
+    sendJson(res, 200, { ok: true, result: snapshot });
     return;
   }
 

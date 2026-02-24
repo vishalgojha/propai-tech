@@ -577,66 +577,7 @@ async function buildAssistantReply(
     return llm.text.trim();
   }
 
-  if (/guardrail/i.test(note)) {
-    return `${note} Ask for a compliant alternative (for example: summarize leads without sharing personal contacts).`;
-  }
-  if (plan.length === 0) {
-    return buildNoPlanReply(request.message, state);
-  }
-  if (results.length === 0) {
-    return `Planned ${plan.length} step(s), but no execution happened due to current autonomy/approvals. Approve steps or change '/set autonomy'.`;
-  }
-
-  const okCount = results.filter((item) => item.ok).length;
-  const failed = results.length - okCount;
-  return `Done. Executed ${results.length} step(s): ${okCount} success, ${failed} failed/skipped. Say 'details' or give the next instruction.`;
-}
-
-function buildNoPlanReply(message: string, state: SessionState): string {
-  const text = message.trim().toLowerCase();
-
-  if (/^(whoami|who am i)\??$/.test(text)) {
-    const operator = process.env.USERNAME || process.env.USER || "operator";
-    return [
-      `You are ${operator} using PropAI Terminal.`,
-      "Role: real-estate ops copilot (chat + tool execution).",
-      `Session: autonomy=${state.autonomy}, dryRun=${state.dryRun}, recipient=${state.recipient || "(none)"}.`,
-      "Use '/state' for full session details."
-    ].join("\n");
-  }
-
-  if (/\b(who are you|what are you|who is this)\b/.test(text)) {
-    return "I am PropAI Terminal, a real-estate copilot that can chat, plan actions, and run approved workflows.";
-  }
-
-  if (/^(hi|hello|hey|namaste)\b/.test(text)) {
-    return "Hi. I can chat here and also run workflows. Tell me one goal like: 'qualify this lead', 'scan broker requirement and shortlist', or 'generate performance report'.";
-  }
-
-  if (
-    /\b(what can you do|what can you|capabilities|help|menu|options|commands|how can you help)\b/.test(text)
-  ) {
-    return [
-      "I can do both chat and execution:",
-      "1) Qualify ads leads (hot/warm/cold).",
-      "2) Match buyer/requirement to inventory.",
-      "3) Run broker-group requirement scan.",
-      "4) Draft or send WhatsApp follow-ups (approval-gated).",
-      "5) Post listings to 99acres (approval-gated).",
-      "6) Schedule site visits and generate reports.",
-      "Use '/help' for session commands and '/set autonomy 0|1|2' for control."
-    ].join("\n");
-  }
-
-  if (/\b(autonomy|dry run|dryrun|recipient|model|state)\b/.test(text)) {
-    return `Current state: autonomy=${state.autonomy}, dryRun=${state.dryRun}, recipient=${state.recipient || "(none)"}. Use '/state' for full session config.`;
-  }
-
-  if (/^\?$/.test(text) || text.length < 3) {
-    return "Send a concrete request, for example: 'qualify this lead: need 2 bhk in wakad under 80L urgent'.";
-  }
-
-  return "I can handle that. Give me your exact objective in one line, and I’ll either respond directly or execute a tool plan with approvals.";
+  return "LLM unavailable. No fallback replies are enabled. Run /llm, ensure OpenRouter or Ollama is configured, then retry.";
 }
 
 function pushHistory(state: SessionState, userMessage: string, assistantMessage: string) {

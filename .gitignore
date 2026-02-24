@@ -2,3 +2,5 @@ node_modules
 logs
 .env
 dist
+.npm-cache
+.local-bin

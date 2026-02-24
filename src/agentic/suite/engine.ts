@@ -11,18 +11,36 @@ import {
 import { generateAssistantText } from "../../llm/chat.js";
 import { evaluateGuardrails } from "./guardrails.js";
 import { getSuiteStore } from "./store.js";
-import type { ChatRequest, ChatResponse, PlannedToolCall, ToolExecutionRecord } from "./types.js";
+import type {
+  AgentActionEvent,
+  ChatRequest,
+  ChatResponse,
+  PlannedToolCall,
+  ToolExecutionRecord
+} from "./types.js";
 
 export class RealtorSuiteAgentEngine {
   private readonly store = getSuiteStore();
 
   async chat(input: ChatRequest): Promise<ChatResponse> {
+    const events: AgentActionEvent[] = [];
+
     const guardrail = evaluateGuardrails(input);
     if (!guardrail.allow) {
+      const assistantMessage = guardrail.reason || "Request blocked by policy guardrails.";
+      events.push(
+        createEvent("guardrail", "blocked", {
+          request: input.message,
+          reason: assistantMessage
+        }),
+        createEvent("assistant", "info", { assistantMessage })
+      );
+
       return {
-        assistantMessage: guardrail.reason || "Request blocked by policy guardrails.",
+        assistantMessage,
         plan: [],
         toolResults: [],
+        events,
         suggestedNextPrompts: [
           "Qualify this new ads lead for budget, location, and urgency",
           "Scan broker group requirement and suggest top 3 matching properties",
@@ -33,11 +51,19 @@ export class RealtorSuiteAgentEngine {
 
     const plan = planToolCalls(input.message);
     if (plan.length === 0) {
+      const assistantMessage = await buildAssistantMessage(input, plan, []);
+      events.push(
+        createEvent("assistant", "info", {
+          assistantMessage,
+          reason: "No tool plan triggered."
+        })
+      );
+
       return {
-        assistantMessage:
-          "I can run group requirement scans, ads lead qualification, listing publish, property matching, WhatsApp follow-up, site visit scheduling, and performance reports.",
+        assistantMessage,
         plan: [],
         toolResults: [],
+        events,
         suggestedNextPrompts: [
           "Scan WhatsApp broker groups for new requirements and map matching inventory",
           "Qualify this ads lead and suggest next action",
@@ -48,10 +74,24 @@ export class RealtorSuiteAgentEngine {
       };
     }
 
+    for (const step of plan) {
+      events.push(
+        createEvent("plan", "planned", { reason: step.reason }, step.tool)
+      );
+    }
+
     const results: ToolExecutionRecord[] = [];
     for (const step of plan) {
       const result = await executeStep(step, input);
       results.push(result);
+      events.push(
+        createEvent(
+          "tool_result",
+          result.ok ? "ok" : "failed",
+          { summary: result.summary, data: result.data },
+          step.tool
+        )
+      );
       await this.store.addAgentAction({
         step,
         result,
@@ -59,10 +99,14 @@ export class RealtorSuiteAgentEngine {
       });
     }
 
+    const assistantMessage = await buildAssistantMessage(input, plan, results);
+    events.push(createEvent("assistant", "info", { assistantMessage }));
+
     return {
-      assistantMessage: await buildAssistantMessage(input, plan, results),
+      assistantMessage,
       plan,
       toolResults: results,
+      events,
       suggestedNextPrompts: [
         "Scan WhatsApp broker groups for new requirements and map matching inventory",
         "Qualify this ads lead and suggest next action",
@@ -130,10 +174,20 @@ async function buildAssistantMessage(
     return llm.text;
   }
 
-  const ran = plan.map((step) => step.tool).join(", ");
-  const failed = results.filter((item) => !item.ok);
-  if (failed.length === 0) {
-    return `Executed ${plan.length} tool(s): ${ran}.`;
-  }
-  return `Executed ${plan.length} tool(s) with ${failed.length} failure(s): ${ran}.`;
+  return "LLM unavailable. No fallback replies are enabled. Configure OpenRouter/Ollama and retry.";
+}
+
+function createEvent(
+  type: AgentActionEvent["type"],
+  status: AgentActionEvent["status"],
+  payload: unknown,
+  step?: AgentActionEvent["step"]
+): AgentActionEvent {
+  return {
+    type,
+    status,
+    timestampIso: new Date().toISOString(),
+    step,
+    payload
+  };
 }

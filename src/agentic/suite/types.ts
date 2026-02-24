@@ -29,10 +29,23 @@ export type ToolExecutionRecord = {
   data?: unknown;
 };
 
+export type AgentActionEventType = "guardrail" | "plan" | "tool_result" | "assistant";
+
+export type AgentActionEventStatus = "planned" | "ok" | "failed" | "blocked" | "info";
+
+export type AgentActionEvent = {
+  type: AgentActionEventType;
+  status: AgentActionEventStatus;
+  timestampIso: string;
+  step?: ToolName;
+  payload: unknown;
+};
+
 export type ChatResponse = {
   assistantMessage: string;
   plan: PlannedToolCall[];
   toolResults: ToolExecutionRecord[];
+  events: AgentActionEvent[];
   suggestedNextPrompts: string[];
 };
 

@@ -94,35 +94,107 @@ Python template decision (`realtor-suite-agent.py`):
 5. Open frontend console:
    - `http://localhost:8080/app`
 
+## One-Click Installer (Windows)
+
+Double-click:
+
+- `Install-PropAI.bat`
+
+Or run directly:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install\install-propai.ps1
+```
+
+Installer behavior:
+
+- Tries global npm install first (`@propai/cli` by default).
+- If package is unavailable, falls back to local source install (`npm install`, `npm run build`, `npm link`).
+- If global install is blocked, it creates a local shim at `.local-bin\propai.cmd`.
+- Runs `propai doctor` after install (unless `-SkipDoctor` is used).
+
+Optional flags:
+
+- `-PackageName "@vishalgojha/propai-cli"` (or your published package name)
+- `-FromSource` (force local source install)
+- `-SkipDoctor`
+
 ## Interactive Terminal
 
-Run the codex-style real-estate terminal:
+Primary terminal (new lively TUI, built with `@vue-termui/core`):
 
 - `npm run terminal`
+- `npm run terminal:tui` (same command)
 
-Optional: classic menu mode
+Branded command wrapper (OpenClaw-style command surface):
 
-- `npm run terminal -- --menu`
+- `npm run propai -- doctor`
+- `npm run propai -- chat`
+- `npm run propai -- ui`
+- `npm run propai -- classic`
 
-Menu capabilities:
+Classic terminal (previous readline UI):
 
-- Agentic session loop with:
-  - stateful context across turns
-  - per-step plan display
-  - autonomy levels (`0` suggest-only, `1` local-write confirm, `2` external-step confirm)
-  - command controls (`/set ...`, `/state`, `/clear`)
-- One-shot suite chat (`RealtorSuiteAgentEngine`)
-- One-shot lead orchestrator flow (intake + matching + follow-up)
-- WhatsApp transport submenu (doctor/search/chats/send)
+- `npm run terminal:classic`
+- `npm run terminal:menu` (classic with menu)
+
+Mode split:
+
+- `propai chat` = terminal agent mode.
+- `npm run dev` = API/Web mode (`http://localhost:8080/app`).
+- If TUI deps are missing, `propai chat` auto-falls back to classic terminal.
+
+TUI capabilities:
+
+- Stateful agentic chat loop in one screen (conversation, session state, activity feed, command list).
+- Autonomy controls:
+  - `0` suggest-only
+  - `1` execution with approvals for local writes, external actions blocked
+  - `2` execution with approvals for local and external actions
+- Approval queue commands: `/approve` and `/deny`.
+- Session controls: `/help`, `/state`, `/llm`, `/set ...`, `/clear`, `/back`.
+- Direct send shortcut (autonomy 2): `msg +919820056180 your message`.
 
 Notes:
 
 - Uses `.env` values (including `WACLI_DRY_RUN`, `WACLI_BIN`).
 - `WACLI_DRY_RUN=true` remains safest for testing.
-- In agentic session, run `/help` to list commands.
-- In agentic session, run `/llm` to inspect live provider/model status.
-- In agentic session, type normal chat messages directly at `propai:` (no slash command needed).
-- LLM provider order is: OpenRouter (if configured) -> Ollama local -> deterministic fallback.
+- LLM provider order is: OpenRouter (if configured) -> Ollama local.
+- Fallback chat templates are disabled. If no provider is available, terminal returns an explicit LLM-unavailable error.
+
+## PropAI CLI Commands
+
+`propai` is a command wrapper for branded operations:
+
+- `propai doctor`:
+  - Probes OpenClaw gateway over HTTP + WebSocket via `OpenClawGatewayClient`.
+  - Probes local PropAI API `/health`.
+  - Reports OpenRouter/Ollama availability.
+- `propai connectors`:
+  - Returns connector inventory health (connectors, credentials, connector-credential pairs).
+  - Supports `--json` for automation.
+- `propai chat` / `propai ui` / `propai tui`:
+  - Launches the new PropAI interactive TUI.
+- `propai classic`:
+  - Launches legacy readline terminal.
+
+Doctor flags:
+
+- `--json`
+- `--http <url>` (OpenClaw HTTP gateway URL)
+- `--ws <url>` (OpenClaw WebSocket URL)
+- `--timeout <ms>`
+- `--propai-url <url>` (PropAI API base URL)
+
+Example:
+
+```bash
+npm run propai -- doctor --http http://127.0.0.1:19001 --ws ws://127.0.0.1:19001 --json
+```
+
+```bash
+npm run propai -- connectors --json
+```
 
 ## Tests
 
@@ -166,6 +238,7 @@ Notes:
 ## Agentic API
 
 - `GET /health`
+- `GET /connectors/health`
 - `GET /properties`
 - `POST /agent/run`
 - `POST /agent/chat`
@@ -293,6 +366,10 @@ curl -X POST http://localhost:8080/whatsapp/pairing/approve \
 - `OLLAMA_BASE_URL` (default `http://127.0.0.1:11434`)
 - `OLLAMA_MODEL` (default `llama3.1:8b`)
 - `OLLAMA_TIMEOUT_MS` (default `12000`)
+- `OPENCLAW_GATEWAY_HTTP_URL` (default `http://127.0.0.1:19001`; used by `propai doctor`)
+- `OPENCLAW_GATEWAY_WS_URL` (default derived from HTTP URL; e.g. `ws://127.0.0.1:19001`)
+- `OPENCLAW_GATEWAY_TIMEOUT_MS` (default `3500`)
+- `OPENCLAW_GATEWAY_API_KEY` (optional bearer token for protected gateway health endpoints)
 - `WACLI_DRY_RUN` (default: `true`)
 - `WACLI_BIN` (default: `wacli`)
 
