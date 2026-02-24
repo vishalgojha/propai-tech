@@ -6,6 +6,8 @@ import { detectBedrooms, detectBudget, detectCity, detectLocality, detectPropert
 import { INDIAN_PROPERTIES } from "../data/indian-properties.js";
 import { getSuiteStore } from "./store.js";
 import { getPropaiLiveAdapter } from "./propai-live-bridge.js";
+import { redactCommandPhone, redactPhone } from "../utils/redact.js";
+import { buildResaleFollowupPlaybook } from "./resale-playbook.js";
 import type {
   ChatRequest,
   MatchResultPayload,
@@ -158,28 +160,65 @@ export async function runSendWhatsappFollowup(input: ChatRequest): Promise<ToolE
   const qualification = intake.qualify(lead);
   const matches = matcher.shortlist(qualification.requirement, 3);
   const composed = followUp.compose(lead, qualification.requirement, matches);
+  const playbook = buildResaleFollowupPlaybook({
+    message: input.message,
+    preferredLanguage: lead.preferredLanguage,
+    leadName: lead.name,
+    localityOrCity: qualification.requirement.locality || qualification.requirement.city,
+    bedrooms: qualification.requirement.bedrooms
+  });
+  const draftMessage = playbook.renderedMessage || composed.draftMessage;
+  const nextActions = uniqueActions([
+    ...composed.nextActions,
+    ...playbook.nurtureSteps.map((step) =>
+      step.offsetDays === 0
+        ? `Send immediate resale follow-up template: ${step.templateName}.`
+        : `Schedule D+${step.offsetDays} nurture follow-up using template: ${step.templateName}.`
+    )
+  ]);
 
   if (!input.recipient) {
     return {
       tool: "send_whatsapp_followup",
       ok: true,
-      summary: "Drafted WhatsApp follow-up message. Recipient missing, so message was not sent.",
-      data: { message: composed.draftMessage, nextActions: composed.nextActions }
+      summary: `Drafted WhatsApp follow-up using ${playbook.template.name}. Recipient missing, so message was not sent.`,
+      data: {
+        message: draftMessage,
+        nextActions,
+        resalePlaybook: {
+          language: playbook.language,
+          templateName: playbook.template.name,
+          quickReplies: playbook.template.quickReplies,
+          nurtureBucketId: playbook.nurtureBucket.id,
+          nurtureSteps: playbook.nurtureSteps,
+          systemPrompt: playbook.systemPrompt
+        }
+      }
     };
   }
 
   const wacli = new WacliTool({ dryRun: input.dryRun });
-  const send = await wacli.sendText(input.recipient, composed.draftMessage);
+  const send = await wacli.sendText(input.recipient, draftMessage);
+  const recipientMasked = redactPhone(input.recipient);
 
   return {
     tool: "send_whatsapp_followup",
     ok: send.ok,
     summary: send.ok
-      ? `WhatsApp follow-up sent to ${input.recipient}.`
-      : `WhatsApp follow-up failed for ${input.recipient}.`,
+      ? `WhatsApp follow-up sent to ${recipientMasked} using ${playbook.template.name}.`
+      : `WhatsApp follow-up failed for ${recipientMasked}.`,
     data: {
-      message: composed.draftMessage,
-      command: send.command,
+      recipient: recipientMasked,
+      message: draftMessage,
+      nextActions,
+      resalePlaybook: {
+        language: playbook.language,
+        templateName: playbook.template.name,
+        quickReplies: playbook.template.quickReplies,
+        nurtureBucketId: playbook.nurtureBucket.id,
+        nurtureSteps: playbook.nurtureSteps
+      },
+      command: redactCommandPhone(send.command),
       stdout: send.stdout,
       stderr: send.stderr
     }
@@ -290,4 +329,14 @@ function detectVisitDate(message: string): string {
 function capitalize(value: string): string {
   if (!value) return value;
   return value[0].toUpperCase() + value.slice(1);
+}
+
+function uniqueActions(items: string[]): string[] {
+  return Array.from(
+    new Set(
+      items
+        .map((item) => String(item || "").trim())
+        .filter((item) => item.length > 0)
+    )
+  );
 }

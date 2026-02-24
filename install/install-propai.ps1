@@ -1,6 +1,8 @@
 param(
   [string]$PackageName = "@propai/cli",
   [switch]$FromSource,
+  [switch]$TryNpmLink,
+  [switch]$SkipSourceUpdate,
   [switch]$SkipDoctor
 )
 
@@ -32,6 +34,59 @@ function Assert-ExitCode([string]$Step) {
   }
 }
 
+function Get-NodeMajor([string]$NodeVersion) {
+  $match = [regex]::Match($NodeVersion, "^v(?<major>\d+)\.")
+  if (-not $match.Success) {
+    return $null
+  }
+  return [int]$match.Groups["major"].Value
+}
+
+function Try-UpdateSourceRepo([string]$RepoRoot) {
+  if (-not (Has-Command "git")) {
+    Write-WarnLine "git is not installed. Skipping source auto-update check."
+    return
+  }
+
+  if (-not (Test-Path (Join-Path $RepoRoot ".git"))) {
+    Write-Info "No git repository found at source path. Skipping source auto-update check."
+    return
+  }
+
+  Write-Info "Checking source updates (git pull --ff-only)."
+
+  Push-Location $RepoRoot
+  try {
+    $status = (& git status --porcelain).Trim()
+    if ($LASTEXITCODE -ne 0) {
+      Write-WarnLine "Could not read git status. Continuing with current local source."
+      return
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($status)) {
+      Write-WarnLine "Local git changes detected. Skipping source auto-update pull."
+      return
+    }
+
+    $upstream = (& git rev-parse --abbrev-ref --symbolic-full-name "@{u}" 2>$null).Trim()
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($upstream)) {
+      Write-WarnLine "No upstream tracking branch configured. Skipping source auto-update pull."
+      return
+    }
+
+    & git pull --ff-only
+    if ($LASTEXITCODE -eq 0) {
+      Write-Ok "Source repository updated."
+    }
+    else {
+      Write-WarnLine "git pull failed. Continuing with current local source."
+    }
+  }
+  finally {
+    Pop-Location
+  }
+}
+
 function Install-FromSource([string]$RepoRoot) {
   if (-not (Test-Path (Join-Path $RepoRoot "package.json"))) {
     throw "Local source install requested, but package.json was not found at $RepoRoot."
@@ -54,27 +109,21 @@ function Install-FromSource([string]$RepoRoot) {
 
     $installed = $false
 
-    & npm link
-    if ($LASTEXITCODE -eq 0) {
-      $installed = $true
+    if ($TryNpmLink) {
+      & npm link
+      if ($LASTEXITCODE -eq 0) {
+        $installed = $true
+      }
+      else {
+        Write-WarnLine "npm link failed. Falling back to local shim command."
+        Install-LocalShim -RepoRoot $RepoRoot
+        $installed = $true
+      }
     }
     else {
-      Write-WarnLine "npm link failed. Falling back to tarball global install."
-
-      & npm pack
-      if ($LASTEXITCODE -eq 0) {
-        $packName = (Get-ChildItem -Path $RepoRoot -Filter "*.tgz" | Sort-Object LastWriteTime -Descending | Select-Object -First 1).Name
-        if ($packName) {
-          $packPath = Join-Path $RepoRoot $packName
-          & npm install -g $packPath
-          if ($LASTEXITCODE -eq 0) {
-            $installed = $true
-          }
-          if (Test-Path $packPath) {
-            Remove-Item -Force $packPath
-          }
-        }
-      }
+      Write-Info "Using local shim command (skip npm link)."
+      Install-LocalShim -RepoRoot $RepoRoot
+      $installed = $true
     }
 
     if (-not $installed) {
@@ -201,6 +250,10 @@ try {
 
   $nodeVersion = (& node --version).Trim()
   Write-Info "Node detected: $nodeVersion"
+  $nodeMajor = Get-NodeMajor -NodeVersion $nodeVersion
+  if ($null -ne $nodeMajor -and ($nodeMajor -lt 20 -or $nodeMajor -gt 22)) {
+    Write-WarnLine "Node $nodeVersion is outside tested range (20.x-22.x). Recommended: Node 20.x."
+  }
 
   if (-not $FromSource) {
     Write-Info "Trying global npm install: $PackageName"
@@ -210,11 +263,18 @@ try {
       Write-Ok "Installed via npm global package."
     }
     else {
-      Write-WarnLine "Global package install failed. Falling back to local source install."
+      Write-WarnLine "Global package install failed (package unavailable or npm auth issue). Falling back to local source install."
     }
   }
 
   if ([string]::IsNullOrWhiteSpace($installedVia)) {
+    if (-not $SkipSourceUpdate) {
+      Try-UpdateSourceRepo -RepoRoot $repoRoot
+    }
+    else {
+      Write-Info "Skipping source auto-update check (-SkipSourceUpdate)."
+    }
+
     Install-FromSource -RepoRoot $repoRoot
     $installedVia = "source"
     Write-Ok "Installed via local source path."

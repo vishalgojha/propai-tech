@@ -2,168 +2,124 @@
 
 Date: 2026-02-24  
 Project root: `C:\Users\visha\propai-tech`  
-Branch: `main`  
-Audience: next developer/AI agent continuing product and infra work
+Branch: `main`
 
-## Current Snapshot
+## Current State
 
-PropAI Tech is a realtor-focused agentic system with:
+PropAI Tech now includes:
 
-- API server (`/agent/chat`, `/connectors/health`, `/health`, `/app`)
-- Terminal UX (classic + Vue TermUI)
-- Branded CLI wrapper (`propai`)
-- Guardrailed tool planner/executor
-- Hybrid LLM routing (OpenRouter first, Ollama fallback)
-- WhatsApp transport integration via `wacli`
-- Portal publishing bridge for:
-  - `99acres`
-  - `magicbricks`
+- session-based agent workflow (`start -> message -> approve/reject`)
+- persistent session storage with PostgreSQL fallback to memory
+- live session updates via SSE
+- request rate limiting + redaction
+- webhook verification + optional signature hardening
+- risk-aware tool policy metadata and approval gating
+- resale follow-up playbook assets (EN/HI templates + nurture buckets)
+- queue-backed approval adapter (feature-flagged, direct fallback)
+- React frontend shell scaffold in `web/`, with backend static serving from `/app`
 
-Latest verified test status:
+Latest validation:
 
-- `npm test` passes (`10/10`)
+- `npm test` passed (`20/20`)
 
-## Tooling Contract (`/agent/chat`)
+## Major Implementations
 
-Planner/executor lives in `src/agentic/suite/`.
+### 1) Session durability + live updates
 
-Current tool names:
+- `src/agentic/suite/session-store.ts`
+  - in-memory + PostgreSQL `agent_sessions` storage
+- `src/agentic/suite/session-manager.ts`
+  - async session operations, persistent save/load
+  - event emitter for session updates
+- `src/agentic/server.ts`
+  - session APIs
+  - `GET /agent/session/:id/events` (SSE stream + heartbeat)
+- `src/agentic/frontend.ts`
+  - EventSource subscription for live pending queue refresh
 
-- `post_to_99acres`
-- `post_to_magicbricks`
-- `match_property_to_buyer`
-- `group_requirement_match_scan`
-- `ads_lead_qualification`
-- `send_whatsapp_followup`
-- `schedule_site_visit`
-- `generate_performance_report`
+### 2) Security and policy hardening
 
-Contract shape (stable):
-
-- `assistantMessage`
-- `plan`
-- `toolResults`
-- `events`
-- `suggestedNextPrompts`
-
-Guardrails:
-
-- blocks PII scraping/export requests
-- blocks guaranteed-return style non-compliant claims
-- blocks unsafe bulk/auto send patterns unless approval flow is explicitly followed
-
-## Publishing Flow (99acres + MagicBricks)
-
-Key files:
-
-- `src/agentic/suite/propai-live-adapter.ts`
-- `src/agentic/suite/propai-live-bridge.ts`
-- `src/agentic/suite/toolkit.ts`
-- `src/agentic/suite/store.ts`
-- `src/agentic/suite/planner.ts`
+- `src/agentic/whatsapp/inbound/signature.ts`
+  - timing-safe `X-Hub-Signature-256` verification
+- `src/agentic/server.ts`
+  - `GET /whatsapp/webhook` verify challenge
+  - `POST /whatsapp/webhook` signature check + payload summary
+- `src/agentic/suite/tool-policy.ts`
+  - centralized tool risk/action scope metadata
 - `src/agentic/suite/types.ts`
+  - risk metadata on tool/pending action views
+- `src/agentic/suite/session-manager.ts`
+  - risk-aware block/queue logic
 
-Behavior:
+### 3) Resale playbook import and wiring
 
-- Planner detects publish intent for both portals.
-- Bridge supports:
-  - shared URL: `PROPAI_LIVE_POST_URL`
-  - optional portal-specific overrides:
-    - `PROPAI_LIVE_99ACRES_POST_URL`
-    - `PROPAI_LIVE_MAGICBRICKS_POST_URL`
-- If publish URL is missing or dry run is enabled, flow uses safe simulated publish.
-- Store persists portal-aware listing IDs:
-  - `A99-xxxxx` for 99acres
-  - `MB-xxxxx` for magicbricks
+- `src/agentic/data/resale-assets.ts`
+  - domain prompt + EN/HI templates + nurture buckets
+- `src/agentic/suite/resale-playbook.ts`
+  - language/template/bucket selection and template rendering
+- `src/agentic/suite/toolkit.ts`
+  - `runSendWhatsappFollowup` now uses resale playbook metadata and nurture actions
 
-## Runtime Entry Points
+### 4) Queue adapter (optional)
 
-API / web:
+- `src/agentic/suite/execution-queue.ts`
+  - `PROPAI_QUEUE_ENABLED` + Redis/BullMQ path
+  - automatic direct-execution fallback when queue infra unavailable
+- `src/agentic/server.ts`
+  - `/agent/session/:id/approve` returns top-level `queue` metadata
 
-- `npm run dev` -> `http://localhost:8080/app`
-- `npm run start` (built runtime)
+### 5) React shell and progressive migration path
 
-Terminal:
+- `web/` created with Vite + React + TS:
+  - `web/src/App.tsx`
+  - `web/src/styles.css`
+- backend `/app` serving behavior:
+  - if `web/dist` exists: serve React app/static files on `/app` and `/app/*`
+  - else: fallback to existing inline `FRONTEND_HTML` UI
 
-- `npm run terminal` (TUI)
-- `npm run terminal:classic`
-- `npm run terminal:menu`
+## Documentation Updated
 
-CLI wrapper:
+- `README.md`
+  - new APIs and env vars
+  - queue behavior and setup references
+  - React web shell workflow
+- `docs/waba-agent-reuse-map.md`
+  - reuse decisions + implementation status
+- `docs/queue-setup.md`
+  - BullMQ/Redis runbook
 
-- `npm run propai -- doctor`
-- `npm run propai -- connectors --json`
-- `npm run propai -- chat`
+## Environment Variables Added/Relevant
 
-## Important Environment Variables
+- `WHATSAPP_WEBHOOK_VERIFY_TOKEN`
+- `WHATSAPP_APP_SECRET`
+- `PROPAI_QUEUE_ENABLED`
+- `PROPAI_QUEUE_NAME`
+- `PROPAI_QUEUE_ATTEMPTS`
+- `PROPAI_QUEUE_BACKOFF_MS`
+- `PROPAI_QUEUE_CONCURRENCY`
+- `PROPAI_QUEUE_TIMEOUT_MS`
+- `REDIS_URL` (required when queue enabled)
 
-Core:
+## Known Blockers / Notes
 
-- `PORT`
-- `DATABASE_URL`
-- `AGENT_API_KEY`
-- `AGENT_ALLOWED_ROLES`
-- `CORS_ORIGIN`
+1. `bullmq` dependency install is not completed in this environment due npm registry permission/network errors (`EACCES` while fetching).  
+   Queue code is present and tested in fallback mode.
 
-LLM:
+2. `web/` dependencies were scaffolded but not installed in this environment (install command timed out).  
+   Backend fallback behavior is in place and tested without `web/dist`.
 
-- `OPENROUTER_API_KEY`
-- `OPENROUTER_MODEL`
-- `OPENROUTER_BASE_URL`
-- `OPENROUTER_TIMEOUT_MS`
-- `OLLAMA_ENABLED`
-- `OLLAMA_BASE_URL`
-- `OLLAMA_MODEL`
-- `OLLAMA_TIMEOUT_MS`
+## Next Operator Steps
 
-Publishing:
+1. Install React shell deps and build:
+   - `npm run web:install`
+   - `npm run web:build`
 
-- `PROPAI_LIVE_POST_URL`
-- `PROPAI_LIVE_99ACRES_POST_URL`
-- `PROPAI_LIVE_MAGICBRICKS_POST_URL`
-- `PROPAI_LIVE_API_KEY`
-- `PROPAI_LIVE_TIMEOUT_MS`
-- `PROPAI_LIVE_MAX_RETRIES`
-- `PROPAI_LIVE_RETRY_BACKOFF_MS`
+2. If queue mode is needed:
+   - install dependency: `npm install bullmq`
+   - run Redis
+   - set queue envs from `docs/queue-setup.md`
 
-Transport / gateway:
-
-- `WACLI_DRY_RUN`
-- `WACLI_BIN`
-- `OPENCLAW_GATEWAY_HTTP_URL`
-- `OPENCLAW_GATEWAY_WS_URL`
-- `OPENCLAW_GATEWAY_TIMEOUT_MS`
-- `OPENCLAW_GATEWAY_API_KEY`
-
-DM policy:
-
-- `WHATSAPP_DM_POLICY`
-- `WHATSAPP_ALLOW_FROM`
-
-## Quick Verification Checklist
-
-1. `npm install`
-2. `npm run build`
-3. `npm test`
-4. `npm run dev`
-5. verify:
-   - `GET http://localhost:8080/health`
-   - `GET http://localhost:8080/connectors/health`
-   - open `http://localhost:8080/app`
-
-## Suggested Next Work
-
-1. Real provider hardening
-- Replace simulated fallback with strict provider contract checks and error surfaces per portal.
-
-2. Approval UX hardening
-- Add durable pending-action queue and operator decision endpoints/UI.
-
-3. Better normalization for India broker slang
-- Expand location alias map and budget parsing confidence signals.
-
-4. Production auth
-- Move header-based role checks to signed JWT/session model.
-
-5. Observability
-- Add per-tool latency, portal publish success rates, and guardrail metrics.
+3. Re-verify:
+   - `npm test`
+   - `npm run dev`
+   - open `/app` and confirm React shell loads when `web/dist` exists

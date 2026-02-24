@@ -10,6 +10,16 @@ export type ToolName =
   | "schedule_site_visit"
   | "generate_performance_report";
 
+export type ToolRisk = "low" | "medium" | "high";
+
+export type ToolActionScope = "read" | "local_write" | "external_write";
+
+export type ToolPolicy = {
+  risk: ToolRisk;
+  actionScope: ToolActionScope;
+  approvalRequiredByDefault: boolean;
+};
+
 export type ListingPortal = "99acres" | "magicbricks";
 
 export type ChatRequest = {
@@ -19,6 +29,8 @@ export type ChatRequest = {
   dryRun?: boolean;
   model?: string;
 };
+
+export type AutonomyLevel = 0 | 1 | 2;
 
 export type PlannedToolCall = {
   tool: ToolName;
@@ -30,6 +42,7 @@ export type ToolExecutionRecord = {
   ok: boolean;
   summary: string;
   data?: unknown;
+  risk?: ToolRisk;
 };
 
 export type AgentActionEventType = "guardrail" | "plan" | "tool_result" | "assistant";
@@ -50,6 +63,57 @@ export type ChatResponse = {
   toolResults: ToolExecutionRecord[];
   events: AgentActionEvent[];
   suggestedNextPrompts: string[];
+};
+
+export type SessionMessageRole = "user" | "assistant" | "system";
+
+export type SessionMessage = {
+  role: SessionMessageRole;
+  content: string;
+  timestampIso: string;
+};
+
+export type PendingToolAction = {
+  id: string;
+  step: PlannedToolCall;
+  request: ChatRequest;
+  createdAtIso: string;
+};
+
+export type PendingToolActionView = {
+  id: string;
+  tool: ToolName;
+  reason: string;
+  requestMessage: string;
+  createdAtIso: string;
+  risk?: ToolRisk;
+};
+
+export type AgentSessionSnapshot = {
+  id: string;
+  createdAtIso: string;
+  updatedAtIso: string;
+  turns: number;
+  pendingActions: PendingToolActionView[];
+  transcript: SessionMessage[];
+};
+
+export type AgentSessionTurnResponse = {
+  assistantMessage: string;
+  note?: string;
+  plan: PlannedToolCall[];
+  toolResults: ToolExecutionRecord[];
+  queuedActions: PendingToolActionView[];
+  blockedTools: ToolName[];
+  pendingActions: PendingToolActionView[];
+  suggestedNextPrompts: string[];
+};
+
+export type SessionExecutionRecord = {
+  actionId: string;
+  tool: ToolName;
+  ok: boolean;
+  summary: string;
 };
 
 export type PropertyPostDraft = {

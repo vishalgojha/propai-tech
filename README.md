@@ -24,6 +24,13 @@ This repo now includes a tool-planned chat endpoint (`POST /agent/chat`) that ca
 - `generate_performance_report` (snapshot from stored listing/visit activity)
 - `group_requirement_match_scan` (monitor broker-group requirement text and shortlist matching properties)
 - `ads_lead_qualification` (score ad leads hot/warm/cold and return next action)
+- `send_whatsapp_followup` now uses resale playbook assets (EN/HI templates + 1/3/7/14 nurture sequence hints)
+- Session approval APIs for stateful operator flow:
+  - `POST /agent/session/start`
+  - `POST /agent/session/:id/message`
+  - `POST /agent/session/:id/approve`
+  - `POST /agent/session/:id/reject`
+  - `GET /agent/session/:id/events` (SSE live updates)
 
 ## New: Modular Skill Pack (`skills/`)
 
@@ -60,6 +67,7 @@ Notes:
 - Blocks requests that attempt PII scraping/export (phone/contact/personal data leakage).
 - Blocks non-compliant claims such as guaranteed/assured return language.
 - Blocks bulk/auto outbound messaging unless explicit human approval workflow is used.
+- Applies request rate limiting on POST execution routes (`/agent/chat`, `/agent/session/*`, `/wacli/*`, `/whatsapp/pairing/approve`).
 - On block, contract stays intact: response returns `assistantMessage`, empty `plan`, empty `toolResults`, and safe next prompts.
 
 Persistence notes:
@@ -67,8 +75,14 @@ Persistence notes:
   - `listings`
   - `visits`
   - `agent_actions`
+- Session state/approval queue persists to:
+  - `agent_sessions`
 - Tables are auto-created on first write.
 - If `DATABASE_URL` is not set, the app falls back to in-memory storage.
+
+Resale playbook assets:
+- `src/agentic/data/resale-assets.ts` includes domain prompt, EN/HI templates, and nurture buckets.
+- `runSendWhatsappFollowup` uses this playbook to select language-aware template drafts and nurture next actions.
 
 Publishing integration naming:
 - Adapter interface: `PropaiLiveAdapter`
@@ -96,7 +110,25 @@ Python template decision (`realtor-suite-agent.py`):
 4. Check health:
    - `GET http://localhost:8080/health`
 5. Open frontend console:
-   - `http://localhost:8080/app`
+   - `http://localhost:8080/app` (session-aware approval queue + operator log)
+   - If `web/dist` exists, `/app` serves the React shell; otherwise it falls back to legacy inline HTML.
+
+## Canonical Dev Path
+
+To avoid Windows/WSL path and line-ending drift, use this as the default local workflow:
+
+1. Use Node `20.x` (`.node-version`, `package.json.engines`).
+2. Use npm `10.x`.
+3. Use PowerShell from repo root (`C:\Users\visha\propai-tech`).
+4. Run:
+   - `npm install`
+   - `npm test`
+   - `npm run dev`
+
+Consistency guardrails:
+
+- `.gitattributes` enforces line endings by file type.
+- `.editorconfig` enforces shared editor defaults.
 
 ## One-Click Installer (Windows)
 
@@ -107,20 +139,24 @@ Double-click:
 Or run directly:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install\install-propai.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install\install-propai.ps1 -FromSource
 ```
 
 Installer behavior:
 
-- Tries global npm install first (`@propai/cli` by default).
-- If package is unavailable, falls back to local source install (`npm install`, `npm run build`, `npm link`).
-- If global install is blocked, it creates a local shim at `.local-bin\propai.cmd`.
+- One-click path installs from local source by default (`npm install`, `npm run build`, local shim).
+- During source install, it auto-checks for updates using `git pull --ff-only` when the repo is clean and tracking an upstream.
+- Source install defaults to local shim at `.local-bin\propai.cmd` (more reliable on Windows permission-restricted setups).
+- If global install is blocked, it creates a local shim.
 - Runs `propai doctor` after install (unless `-SkipDoctor` is used).
 
 Optional flags:
 
 - `-PackageName "@vishalgojha/propai-cli"` (or your published package name)
 - `-FromSource` (force local source install)
+- (Without `-FromSource`, installer tries global npm package first)
+- `-TryNpmLink` (attempt `npm link` during source install before fallback to local shim)
+- `-SkipSourceUpdate` (disable source auto-update check before source install)
 - `-SkipDoctor`
 
 ## Interactive Terminal
@@ -207,6 +243,58 @@ npm run propai -- connectors --json
   - planner tool-selection behavior
   - toolkit listing/visit/report behavior
   - `/agent/chat` integration (dry-run + validation + auth/RBAC)
+  - approval-gated behavior contract (bulk/auto-send blocked + approval-required scan path)
+  - session queue flow (`start -> queue -> approve/reject`)
+
+## Release Flow
+
+Single scripted path:
+
+1. `npm run release:check -- patch`
+2. `npm run release -- patch`
+
+What it automates:
+
+- `npm test`
+- version bump (`package.json`, `package-lock.json`)
+- changelog update (`CHANGELOG.md`)
+- git commit + tag
+- git push (unless `--skip-push`)
+- npm publish (skipped automatically when `private=true`, or with `--skip-publish`)
+
+Dry run:
+
+- `npm run release:dry -- patch`
+
+## KPI + Governance
+
+- KPI contract: `docs/kpi-contract.md`
+- Data governance policy: `docs/data-governance.md`
+- Frontend migration criteria: `docs/frontend-migration-plan.md`
+- Queue setup runbook: `docs/queue-setup.md`
+
+## React Web Shell (Optional)
+
+Build and run the separate React frontend:
+
+```bash
+npm run web:install
+npm run web:dev
+```
+
+Build for server hosting:
+
+```bash
+npm run web:build
+```
+
+Then start backend:
+
+```bash
+npm run dev
+```
+
+The Node server serves `web/dist` on `/app` and `/app/*` when build output exists.
 
 ## Deploy (Railway)
 
@@ -225,7 +313,11 @@ npm run propai -- connectors --json
 | `WACLI_DRY_RUN` | Recommended | `true` |
 | `WHATSAPP_DM_POLICY` | Recommended | `allowlist` |
 | `WHATSAPP_ALLOW_FROM` | If allowlist | `+919999999999,+14155550123` |
+| `WHATSAPP_WEBHOOK_VERIFY_TOKEN` | Optional (webhook) | `your-verify-token` |
+| `WHATSAPP_APP_SECRET` | Optional (webhook signature) | `your-meta-app-secret` |
 | `DATABASE_URL` | If pairing mode | `postgres://...` |
+| `PROPAI_QUEUE_ENABLED` | Optional | `true` |
+| `REDIS_URL` | If queue enabled | `redis://...` |
 
 4. Optional vars for integrations:
 - `PROPAI_LIVE_POST_URL`
@@ -248,11 +340,20 @@ npm run propai -- connectors --json
 - `GET /properties`
 - `POST /agent/run`
 - `POST /agent/chat`
+- `GET /agent/sessions`
+- `POST /agent/session/start`
+- `GET /agent/session/:id`
+- `POST /agent/session/:id/message`
+- `POST /agent/session/:id/approve`
+- `POST /agent/session/:id/reject`
+- `GET /agent/session/:id/events` (SSE)
 - `POST /wacli/send`
 - `POST /wacli/search`
 - `POST /wacli/chats`
 - `POST /wacli/doctor`
 - `POST /whatsapp/pairing/approve`
+- `GET /whatsapp/webhook` (Meta verify challenge)
+- `POST /whatsapp/webhook` (Meta events + optional signature verification)
 
 ### Example: run orchestrator
 
@@ -295,6 +396,52 @@ curl -X POST http://localhost:8080/agent/chat \
     "model": "openai/gpt-4o-mini",
     "dryRun": true
   }'
+```
+
+### Example: session-based queue flow
+
+Start or resume a session:
+
+```bash
+curl -X POST http://localhost:8080/agent/session/start \
+  -H "Content-Type: application/json" \
+  -H "x-agent-api-key: your-key" \
+  -H "x-agent-role: realtor_admin" \
+  -d '{}'
+```
+
+Queue actions (autonomy 1 blocks external actions, queues local-write actions):
+
+```bash
+curl -X POST http://localhost:8080/agent/session/<session-id>/message \
+  -H "Content-Type: application/json" \
+  -H "x-agent-api-key: your-key" \
+  -H "x-agent-role: realtor_admin" \
+  -d '{
+    "message": "Schedule site visit tomorrow in Wakad",
+    "autonomy": 1,
+    "dryRun": true
+  }'
+```
+
+Approve one queued action:
+
+```bash
+curl -X POST http://localhost:8080/agent/session/<session-id>/approve \
+  -H "Content-Type: application/json" \
+  -H "x-agent-api-key: your-key" \
+  -H "x-agent-role: realtor_admin" \
+  -d '{"actionId":"act-..."}'
+```
+
+If `PROPAI_QUEUE_ENABLED=true`, approve responses include a top-level `queue` object:
+- `enabled: true` with `jobId` when BullMQ+Redis is active
+- `enabled: false` with fallback reason when queue infra is unavailable
+
+Stream live session updates (Server-Sent Events):
+
+```bash
+curl -N "http://localhost:8080/agent/session/<session-id>/events?apiKey=your-key&role=realtor_admin"
 ```
 
 ### Example: OpenRouter CLI
@@ -364,6 +511,17 @@ curl -X POST http://localhost:8080/whatsapp/pairing/approve \
 - `PROPAI_LIVE_RETRY_BACKOFF_MS` (default `300`, linear backoff base)
 - `AGENT_API_KEY` (optional, when set `/agent/chat` requires `x-agent-api-key`)
 - `AGENT_ALLOWED_ROLES` (optional CSV, default `realtor_admin,ops`; checks `x-agent-role` when provided)
+- `AGENT_RATE_LIMIT_WINDOW_MS` (default `60000`, rate-limit window for POST execution routes)
+- `AGENT_RATE_LIMIT_MAX` (default `180`, max POST execution requests per window per IP+route key)
+- `PROPAI_QUEUE_ENABLED` (default `false`; when true, approve execution attempts BullMQ queue mode)
+- `PROPAI_QUEUE_NAME` (default `propai-session-execution`)
+- `PROPAI_QUEUE_ATTEMPTS` (default `3`)
+- `PROPAI_QUEUE_BACKOFF_MS` (default `1000`)
+- `PROPAI_QUEUE_CONCURRENCY` (default `2`)
+- `PROPAI_QUEUE_TIMEOUT_MS` (default `45000`)
+- `REDIS_URL` (required when queue mode is enabled)
+- `WHATSAPP_WEBHOOK_VERIFY_TOKEN` (optional, enables `GET /whatsapp/webhook` challenge verification)
+- `WHATSAPP_APP_SECRET` (optional, verifies `X-Hub-Signature-256` on `POST /whatsapp/webhook`)
 - `CORS_ORIGIN` (default `*`)
 - `OPENROUTER_API_KEY` (required to enable OpenRouter in backend + CLI)
 - `OPENROUTER_MODEL` (default `openai/gpt-4o-mini`)
@@ -405,5 +563,7 @@ Policy envs:
 - `WHATSAPP_DM_POLICY` = `pairing | allowlist | open | disabled`
 - `WHATSAPP_ALLOW_FROM` = comma-separated E.164 allowlist
 - In `pairing` mode, approve codes with `POST /whatsapp/pairing/approve`
+- `WHATSAPP_WEBHOOK_VERIFY_TOKEN` enables `GET /whatsapp/webhook` challenge verification
+- `WHATSAPP_APP_SECRET` enables `X-Hub-Signature-256` verification on `POST /whatsapp/webhook`
 - `pairing` mode requires `DATABASE_URL` (startup fails fast without it)
 - Runtime config is validated centrally at startup (`validateRuntimeConfigOrThrow`)

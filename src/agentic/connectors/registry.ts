@@ -1,4 +1,5 @@
 import type { Connector, ConnectorCredentialPair, Credential } from "./types.js";
+import { redactSecret } from "../utils/redact.js";
 
 const CONNECTORS: Connector[] = [
   {
@@ -110,7 +111,7 @@ export function buildCredentials(env: NodeJS.ProcessEnv = process.env): Credenti
       ...def,
       present,
       source: present ? "env" : "none",
-      redactedValue: present ? redactValue(value) : undefined
+      redactedValue: present ? redactSecret(value) : undefined
     };
   });
 }
@@ -184,11 +185,4 @@ export function buildConnectorCredentialPairs(
         : "Token optional for unprotected local gateway."
     }
   ];
-}
-
-function redactValue(value: string): string {
-  if (value.length <= 6) {
-    return "*".repeat(value.length);
-  }
-  return `${value.slice(0, 3)}***${value.slice(-2)}`;
 }

@@ -25,7 +25,11 @@ export const FRONTEND_HTML = `<!doctype html>
         <article class="panel panel-main">
           <div class="panel-head">
             <h2>Agent Console</h2>
-            <button id="healthBtn" class="ghost" type="button">Ping Health</button>
+            <div class="row-buttons">
+              <span id="sessionBadge" class="tiny mono-pill">session: --</span>
+              <button id="newSessionBtn" class="ghost" type="button">New Session</button>
+              <button id="healthBtn" class="ghost" type="button">Ping Health</button>
+            </div>
           </div>
 
           <form id="chatForm" class="form-grid">
@@ -52,6 +56,15 @@ export const FRONTEND_HTML = `<!doctype html>
             </label>
 
             <label class="label">
+              Autonomy
+              <select id="autonomy">
+                <option value="0">0 (suggest only)</option>
+                <option value="1" selected>1 (approve local writes)</option>
+                <option value="2">2 (approve local + external)</option>
+              </select>
+            </label>
+
+            <label class="label">
               API Key (optional)
               <input id="apiKey" placeholder="x-agent-api-key" />
             </label>
@@ -73,6 +86,19 @@ export const FRONTEND_HTML = `<!doctype html>
         </article>
 
         <aside class="panel panel-side">
+          <h2>Approval Queue</h2>
+          <p class="hint">Queued actions stay in this session until approved or denied.</p>
+
+          <div id="pendingMeta" class="tiny">No pending actions.</div>
+          <div id="pendingList" class="stack"></div>
+
+          <div class="row-buttons">
+            <button id="approveAllBtn" class="primary wide" type="button">Approve All</button>
+            <button id="denyAllBtn" class="ghost wide" type="button">Deny All</button>
+          </div>
+
+          <div class="divider"></div>
+
           <h2>Pairing Approval</h2>
           <p class="hint">Approve secure pairing when DM policy is set to <code>pairing</code>.</p>
 
@@ -160,6 +186,14 @@ h1{margin:0;font-size:2.05rem;line-height:1.1}
 .panel-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}
 h2{margin:0;font-size:1.03rem;letter-spacing:.02em}
 .tiny{font-size:.75rem;color:var(--muted)}
+.row-buttons{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.mono-pill{
+  border:1px solid var(--line);
+  border-radius:999px;
+  padding:6px 10px;
+  background:#ffffffd9;
+  color:#2d4032;
+}
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .label{display:grid;gap:6px;font-size:.8rem;color:var(--muted)}
 .label-full{grid-column:1/-1}
@@ -198,10 +232,37 @@ input:focus,textarea:focus,select:focus{
   color:var(--ink);
 }
 .ghost:hover{transform:translateY(-1px)}
+.danger{
+  border:1px solid #d8a8a8;
+  background:#fff4f4;
+  color:#7f2323;
+}
 .stack{display:grid;gap:10px}
 .hint{margin:4px 0 12px;color:var(--muted);font-size:.86rem}
 .divider{height:1px;background:var(--line);margin:12px 0}
 .wide{width:100%}
+.pending-item{
+  border:1px solid var(--line);
+  border-radius:12px;
+  background:#fff;
+  padding:10px;
+}
+.pending-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px;
+}
+.pending-tool{
+  font-weight:600;
+  color:#2b3d2f;
+  letter-spacing:.01em;
+}
+.pending-actions{
+  margin-top:8px;
+  display:flex;
+  gap:8px;
+}
 .panel-log{margin-top:14px}
 #output{
   margin:0;
@@ -228,6 +289,8 @@ input:focus,textarea:focus,select:focus{
   .label-full{grid-column:auto}
   .actions{grid-column:auto;justify-content:stretch}
   .actions .primary{width:100%}
+  .pending-actions{flex-direction:column}
+  .pending-actions button{width:100%}
 }
 `;
 
@@ -236,13 +299,26 @@ const chatForm = document.getElementById("chatForm");
 const pairForm = document.getElementById("pairForm");
 const healthBtn = document.getElementById("healthBtn");
 const clearBtn = document.getElementById("clearBtn");
+const newSessionBtn = document.getElementById("newSessionBtn");
+const approveAllBtn = document.getElementById("approveAllBtn");
+const denyAllBtn = document.getElementById("denyAllBtn");
+const pendingMeta = document.getElementById("pendingMeta");
+const pendingList = document.getElementById("pendingList");
+const sessionBadge = document.getElementById("sessionBadge");
 const modelInput = document.getElementById("model");
+const apiKeyInput = document.getElementById("apiKey");
+const roleInput = document.getElementById("role");
+
+let sessionId = localStorage.getItem("propai_session_id") || "";
+let sessionEvents = null;
+let sessionEventsKey = "";
+let sessionStreamErrorLogged = false;
 const savedModel = localStorage.getItem("propai_openrouter_model");
 if (savedModel) modelInput.value = savedModel;
 
 function headers() {
-  const apiKey = document.getElementById("apiKey").value.trim();
-  const role = document.getElementById("role").value.trim();
+  const apiKey = apiKeyInput.value.trim();
+  const role = roleInput.value.trim();
   const h = { "Content-Type": "application/json" };
   if (apiKey) h["x-agent-api-key"] = apiKey;
   if (role) h["x-agent-role"] = role;
@@ -259,22 +335,262 @@ function print(label, value) {
   out.textContent = line + out.textContent;
 }
 
+function setSessionBadge() {
+  sessionBadge.textContent = sessionId ? "session: " + sessionId : "session: --";
+}
+
+function closeSessionEvents() {
+  if (sessionEvents) {
+    sessionEvents.close();
+    sessionEvents = null;
+  }
+  sessionEventsKey = "";
+  sessionStreamErrorLogged = false;
+}
+
+function getSessionEventsUrl() {
+  if (!sessionId) return "";
+  const params = new URLSearchParams();
+  const apiKey = apiKeyInput.value.trim();
+  const role = roleInput.value.trim();
+  if (apiKey) params.set("apiKey", apiKey);
+  if (role) params.set("role", role);
+  const query = params.toString();
+  return "/agent/session/" + encodeURIComponent(sessionId) + "/events" + (query ? "?" + query : "");
+}
+
+function connectSessionEvents(forceReconnect) {
+  if (!sessionId || typeof EventSource === "undefined") return;
+  const streamUrl = getSessionEventsUrl();
+  if (!streamUrl) return;
+  if (!forceReconnect && sessionEvents && sessionEventsKey === streamUrl) return;
+
+  closeSessionEvents();
+  sessionEventsKey = streamUrl;
+  sessionEvents = new EventSource(streamUrl);
+
+  sessionEvents.onopen = () => {
+    print("GET /agent/session/:id/events (open)", { sessionId });
+  };
+
+  sessionEvents.onerror = () => {
+    if (!sessionStreamErrorLogged) {
+      sessionStreamErrorLogged = true;
+      print("GET /agent/session/:id/events (retrying)", "connection lost, reconnecting");
+    }
+  };
+
+  sessionEvents.addEventListener("session_snapshot", (event) => {
+    try {
+      sessionStreamErrorLogged = false;
+      const payload = JSON.parse(event.data || "{}");
+      if (!payload || !payload.session) return;
+      if (payload.session.id && payload.session.id !== sessionId) {
+        sessionId = payload.session.id;
+        localStorage.setItem("propai_session_id", sessionId);
+        setSessionBadge();
+      }
+      renderPending(payload.session.pendingActions || []);
+    } catch (err) {
+      print("GET /agent/session/:id/events (parse error)", String(err));
+    }
+  });
+}
+
+function normalizePending(result) {
+  if (!result) return [];
+  if (Array.isArray(result.pendingActions)) return result.pendingActions;
+  if (result.response && Array.isArray(result.response.pendingActions)) return result.response.pendingActions;
+  if (result.execution && Array.isArray(result.execution.pendingActions)) return result.execution.pendingActions;
+  if (result.rejection && Array.isArray(result.rejection.pendingActions)) return result.rejection.pendingActions;
+  return [];
+}
+
+function renderPending(actions) {
+  const rows = Array.isArray(actions) ? actions : [];
+  pendingList.innerHTML = "";
+
+  if (rows.length === 0) {
+    pendingMeta.textContent = "No pending actions.";
+    return;
+  }
+
+  pendingMeta.textContent = rows.length + " pending action(s)";
+
+  rows.forEach((item) => {
+    const card = document.createElement("div");
+    card.className = "pending-item";
+
+    const head = document.createElement("div");
+    head.className = "pending-head";
+    head.innerHTML = "<span class='pending-tool'>" + item.tool + "</span><span class='tiny'>" + item.id + "</span>";
+
+    const reason = document.createElement("div");
+    reason.className = "tiny";
+    reason.textContent = item.reason || "No reason provided";
+
+    const message = document.createElement("div");
+    message.className = "tiny";
+    message.textContent = item.requestMessage || "";
+
+    const actionsBar = document.createElement("div");
+    actionsBar.className = "pending-actions";
+
+    const approve = document.createElement("button");
+    approve.type = "button";
+    approve.className = "primary";
+    approve.textContent = "Approve";
+    approve.onclick = () => approvePending(item.id);
+
+    const deny = document.createElement("button");
+    deny.type = "button";
+    deny.className = "ghost danger";
+    deny.textContent = "Deny";
+    deny.onclick = () => denyPending(item.id);
+
+    actionsBar.appendChild(approve);
+    actionsBar.appendChild(deny);
+
+    card.appendChild(head);
+    card.appendChild(reason);
+    card.appendChild(message);
+    card.appendChild(actionsBar);
+    pendingList.appendChild(card);
+  });
+}
+
+async function startSession(forceNew) {
+  const body = {};
+  if (!forceNew && sessionId) body.sessionId = sessionId;
+  const res = await fetch("/agent/session/start", {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify(body)
+  });
+  const data = await res.json();
+  if (!data.ok || !data.result || !data.result.session) {
+    throw new Error("Failed to start session");
+  }
+
+  sessionId = data.result.session.id;
+  localStorage.setItem("propai_session_id", sessionId);
+  setSessionBadge();
+  renderPending(data.result.session.pendingActions || []);
+  connectSessionEvents(true);
+  print("POST /agent/session/start (" + res.status + ")", data);
+}
+
+async function ensureSession() {
+  if (sessionId) {
+    connectSessionEvents(false);
+    return;
+  }
+  await startSession(false);
+}
+
+async function approvePending(actionId) {
+  try {
+    await ensureSession();
+    const res = await fetch("/agent/session/" + encodeURIComponent(sessionId) + "/approve", {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify({ actionId })
+    });
+    const data = await res.json();
+    renderPending(normalizePending(data.result));
+    print("POST /agent/session/:id/approve (" + res.status + ")", data);
+  } catch (err) {
+    print("POST /agent/session/:id/approve (error)", String(err));
+  }
+}
+
+async function denyPending(actionId) {
+  try {
+    await ensureSession();
+    const res = await fetch("/agent/session/" + encodeURIComponent(sessionId) + "/reject", {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify({ actionId })
+    });
+    const data = await res.json();
+    renderPending(normalizePending(data.result));
+    print("POST /agent/session/:id/reject (" + res.status + ")", data);
+  } catch (err) {
+    print("POST /agent/session/:id/reject (error)", String(err));
+  }
+}
+
 chatForm.addEventListener("submit", async (e) => {
   e.preventDefault();
-  const model = document.getElementById("model").value.trim();
-  if (model) localStorage.setItem("propai_openrouter_model", model);
-  const body = {
-    message: document.getElementById("message").value.trim(),
-    recipient: document.getElementById("recipient").value.trim() || undefined,
-    dryRun: document.getElementById("dryRun").value === "true",
-    model: model || undefined
-  };
   try {
-    const res = await fetch("/agent/chat", { method: "POST", headers: headers(), body: JSON.stringify(body) });
+    await ensureSession();
+    const model = document.getElementById("model").value.trim();
+    if (model) localStorage.setItem("propai_openrouter_model", model);
+
+    const body = {
+      message: document.getElementById("message").value.trim(),
+      recipient: document.getElementById("recipient").value.trim() || undefined,
+      dryRun: document.getElementById("dryRun").value === "true",
+      model: model || undefined,
+      autonomy: Number(document.getElementById("autonomy").value)
+    };
+
+    const res = await fetch("/agent/session/" + encodeURIComponent(sessionId) + "/message", {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify(body)
+    });
     const data = await res.json();
-    print("POST /agent/chat (" + res.status + ")", data);
+    if (data.result && data.result.session && data.result.session.id) {
+      sessionId = data.result.session.id;
+      localStorage.setItem("propai_session_id", sessionId);
+      setSessionBadge();
+      connectSessionEvents(false);
+    }
+    renderPending(normalizePending(data.result));
+    print("POST /agent/session/:id/message (" + res.status + ")", data);
   } catch (err) {
-    print("POST /agent/chat (error)", String(err));
+    print("POST /agent/session/:id/message (error)", String(err));
+  }
+});
+
+approveAllBtn.addEventListener("click", async () => {
+  try {
+    await ensureSession();
+    const res = await fetch("/agent/session/" + encodeURIComponent(sessionId) + "/approve", {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify({ all: true })
+    });
+    const data = await res.json();
+    renderPending(normalizePending(data.result));
+    print("POST /agent/session/:id/approve all (" + res.status + ")", data);
+  } catch (err) {
+    print("POST /agent/session/:id/approve all (error)", String(err));
+  }
+});
+
+denyAllBtn.addEventListener("click", async () => {
+  try {
+    await ensureSession();
+    const res = await fetch("/agent/session/" + encodeURIComponent(sessionId) + "/reject", {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify({ all: true })
+    });
+    const data = await res.json();
+    renderPending(normalizePending(data.result));
+    print("POST /agent/session/:id/reject all (" + res.status + ")", data);
+  } catch (err) {
+    print("POST /agent/session/:id/reject all (error)", String(err));
+  }
+});
+
+newSessionBtn.addEventListener("click", async () => {
+  try {
+    await startSession(true);
+  } catch (err) {
+    print("POST /agent/session/start (error)", String(err));
   }
 });
 
@@ -308,9 +624,26 @@ clearBtn.addEventListener("click", () => {
   out.textContent = "Ready.";
 });
 
+apiKeyInput.addEventListener("change", () => {
+  connectSessionEvents(true);
+});
+
+roleInput.addEventListener("change", () => {
+  connectSessionEvents(true);
+});
+
+window.addEventListener("beforeunload", () => {
+  closeSessionEvents();
+});
+
 document.getElementById("message").addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
     chatForm.requestSubmit();
   }
+});
+
+setSessionBadge();
+startSession(false).catch((err) => {
+  print("POST /agent/session/start (error)", String(err));
 });
 `;
