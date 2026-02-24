@@ -55,7 +55,7 @@ async function main() {
         [
           "TUI runtime is not installed in this environment.",
           "Falling back to classic terminal mode.",
-          "Install later with: npm install vue @vue-termui/core"
+          "Install later with: npm install vue vue-termui"
         ].join("\n")
       );
       await import("./interactive-terminal.js");
@@ -375,11 +375,20 @@ function hasTuiRuntime(): boolean {
   const require = createRequire(import.meta.url);
   try {
     require.resolve("vue");
-    require.resolve("@vue-termui/core");
-    return true;
   } catch {
     return false;
   }
+
+  for (const pkg of ["vue-termui", "@vue-termui/core"]) {
+    try {
+      require.resolve(pkg);
+      return true;
+    } catch {
+      // continue
+    }
+  }
+
+  return false;
 }
 
 function joinUrl(base: string, path: string): string {

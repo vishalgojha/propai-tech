@@ -138,7 +138,7 @@ async function main() {
       [
         "Missing TUI runtime packages.",
         "Install with:",
-        "  npm install vue @vue-termui/core",
+        "  npm install vue vue-termui",
         "Then run:",
         "  npm run terminal:tui"
       ].join("\n")
@@ -966,7 +966,7 @@ async function loadVueRuntime(): Promise<VueRuntime | null> {
 }
 
 async function loadTermUiRuntime(): Promise<TermUiRuntime | null> {
-  const candidates = ["@vue-termui/core", "vue-termui"];
+  const candidates = ["vue-termui", "@vue-termui/core"];
 
   for (const name of candidates) {
     const mod = (await safeImport(name)) as AnyRecord | null;

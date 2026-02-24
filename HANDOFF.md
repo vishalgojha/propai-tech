@@ -4,6 +4,38 @@ Date: 2026-02-24
 Project root: `C:\Users\visha\propai-tech`  
 Branch: `main`
 
+## Update - 2026-02-24 (npm ci registry fix)
+
+Issue addressed:
+
+- CI and local installs failed on `npm ci` with:
+  - `404 Not Found - GET https://registry.npmjs.org/@vue-termui%2fcore`
+
+Root cause:
+
+- Root `package.json` still declared `@vue-termui/core` and `vue` as mandatory dependencies.
+- `@vue-termui/core` is not resolvable in npm registry for the target environment, and TUI is optional at runtime.
+
+Changes made:
+
+- `package.json`
+  - removed mandatory deps: `@vue-termui/core`, `vue`
+- `src/cli/propai.ts`
+  - updated fallback install hint to `npm install vue vue-termui`
+  - changed TUI runtime detection to accept either `vue-termui` or legacy `@vue-termui/core`
+- `src/cli/propai-termui.ts`
+  - updated install hint to `npm install vue vue-termui`
+  - candidate module order now prefers `vue-termui` then legacy `@vue-termui/core`
+- `README.md`
+  - updated terminal section wording to optional `vue-termui` runtime
+
+Validation notes:
+
+- Re-ran `npm ci` locally after patch:
+  - the `@vue-termui/core` 404 no longer appears
+  - install now fails later due local Windows permission error (`spawn EPERM`) and unsupported local engine (`Node v25.6.1`, project expects `>=20 <23`)
+- `npm run build` could not run because dependencies were not installed in this environment.
+
 ## Current State
 
 PropAI Tech now includes:

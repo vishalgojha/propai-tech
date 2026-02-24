@@ -161,7 +161,7 @@ Optional flags:
 
 ## Interactive Terminal
 
-Primary terminal (new lively TUI, built with `@vue-termui/core`):
+Primary terminal (new lively TUI, built with optional `vue-termui` runtime):
 
 - `npm run terminal`
 - `npm run terminal:tui` (same command)
