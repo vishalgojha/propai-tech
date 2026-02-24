@@ -20,27 +20,45 @@ const store = getSuiteStore();
 const propaiLiveAdapter = getPropaiLiveAdapter();
 
 export async function runPostTo99Acres(input: ChatRequest): Promise<ToolExecutionRecord> {
+  return runPostToPortal(input, "99acres");
+}
+
+export async function runPostToMagicBricks(input: ChatRequest): Promise<ToolExecutionRecord> {
+  return runPostToPortal(input, "magicbricks");
+}
+
+async function runPostToPortal(
+  input: ChatRequest,
+  portal: "99acres" | "magicbricks"
+): Promise<ToolExecutionRecord> {
+  const tool = portal === "magicbricks" ? "post_to_magicbricks" : "post_to_99acres";
   const draft = extractPropertyDraft(input.message);
-  const publish = await propaiLiveAdapter.publishTo99Acres({
-    draft,
-    dryRun: input.dryRun
-  });
+  const publish =
+    portal === "magicbricks"
+      ? await propaiLiveAdapter.publishToMagicBricks({
+          draft,
+          dryRun: input.dryRun
+        })
+      : await propaiLiveAdapter.publishTo99Acres({
+          draft,
+          dryRun: input.dryRun
+        });
 
   if (!publish.ok) {
     return {
-      tool: "post_to_99acres",
+      tool,
       ok: false,
       summary: publish.summary,
       data: { publish }
     };
   }
 
-  const record = await store.createListing(draft);
+  const record = await store.createListing(draft, portal);
 
   return {
-    tool: "post_to_99acres",
+    tool,
     ok: true,
-    summary: `Posted "${draft.title}" to 99acres as listing ${record.id}. (${publish.status})`,
+    summary: `Posted "${draft.title}" to ${portal} as listing ${record.id}. (${publish.status})`,
     data: {
       record,
       publish
@@ -197,16 +215,26 @@ export async function runGeneratePerformanceReport(): Promise<ToolExecutionRecor
     return acc;
   }, {});
 
+  const byPortal = listings.reduce<Record<string, number>>((acc, item) => {
+    acc[item.portal] = (acc[item.portal] || 0) + 1;
+    return acc;
+  }, {});
+
+  const portalSummary = Object.entries(byPortal)
+    .map(([portal, count]) => `${count} ${portal}`)
+    .join(", ");
+
   return {
     tool: "generate_performance_report",
     ok: true,
-    summary: `Performance snapshot: ${activeListings} active 99acres listings, ${visits.length} scheduled site visits.`,
+    summary: `Performance snapshot: ${activeListings} active listings (${portalSummary || "no portal data"}), ${visits.length} scheduled site visits.`,
     data: {
       timestampIso: new Date().toISOString(),
       activeListings,
       totalListings: listings.length,
       scheduledVisits: visits.length,
-      listingsByLocality: byLocality
+      listingsByLocality: byLocality,
+      listingsByPortal: byPortal
     }
   };
 }

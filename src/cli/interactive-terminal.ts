@@ -13,6 +13,7 @@ import {
   runGeneratePerformanceReport,
   runGroupRequirementMatchScan,
   runMatchPropertyToBuyer,
+  runPostToMagicBricks,
   runPostTo99Acres,
   runScheduleSiteVisit,
   runSendWhatsappFollowup
@@ -41,7 +42,7 @@ type SessionState = {
 
 const DEFAULT_DRY_RUN = process.env.WACLI_DRY_RUN !== "false";
 const LOCAL_WRITE_TOOLS: ToolName[] = ["schedule_site_visit"];
-const EXTERNAL_TOOLS: ToolName[] = ["post_to_99acres", "send_whatsapp_followup"];
+const EXTERNAL_TOOLS: ToolName[] = ["post_to_99acres", "post_to_magicbricks", "send_whatsapp_followup"];
 
 const suiteEngine = new RealtorSuiteAgentEngine();
 const orchestrator = new RealtorOrchestrator();
@@ -484,6 +485,8 @@ async function executeStep(step: PlannedToolCall, request: ChatRequest): Promise
   switch (step.tool) {
     case "post_to_99acres":
       return runPostTo99Acres(request);
+    case "post_to_magicbricks":
+      return runPostToMagicBricks(request);
     case "match_property_to_buyer":
       return runMatchPropertyToBuyer(request);
     case "group_requirement_match_scan":

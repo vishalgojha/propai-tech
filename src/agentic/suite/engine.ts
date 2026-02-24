@@ -4,6 +4,7 @@ import {
   runGeneratePerformanceReport,
   runGroupRequirementMatchScan,
   runMatchPropertyToBuyer,
+  runPostToMagicBricks,
   runPostTo99Acres,
   runScheduleSiteVisit,
   runSendWhatsappFollowup
@@ -68,6 +69,7 @@ export class RealtorSuiteAgentEngine {
           "Scan WhatsApp broker groups for new requirements and map matching inventory",
           "Qualify this ads lead and suggest next action",
           "Post my 3 BHK in Wakad to 99acres",
+          "Publish my 2 BHK in Baner to MagicBricks",
           "Match properties for a 2 BHK buyer in Whitefield under 1.2 cr",
           "Send WhatsApp follow-up to my new lead"
         ]
@@ -122,6 +124,8 @@ async function executeStep(step: PlannedToolCall, input: ChatRequest): Promise<T
   switch (step.tool) {
     case "post_to_99acres":
       return runPostTo99Acres(input);
+    case "post_to_magicbricks":
+      return runPostToMagicBricks(input);
     case "match_property_to_buyer":
       return runMatchPropertyToBuyer(input);
     case "group_requirement_match_scan":

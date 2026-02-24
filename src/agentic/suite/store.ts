@@ -1,6 +1,13 @@
 import { Pool } from "pg";
 import type { ChatRequest } from "./types.js";
-import type { PlannedToolCall, PostedListing, PropertyPostDraft, ScheduledVisit, ToolExecutionRecord } from "./types.js";
+import type {
+  ListingPortal,
+  PlannedToolCall,
+  PostedListing,
+  PropertyPostDraft,
+  ScheduledVisit,
+  ToolExecutionRecord
+} from "./types.js";
 
 type VisitCreateInput = {
   leadName: string;
@@ -15,7 +22,7 @@ type AgentActionInput = {
 };
 
 export interface SuiteStore {
-  createListing(draft: PropertyPostDraft): Promise<PostedListing>;
+  createListing(draft: PropertyPostDraft, portal: ListingPortal): Promise<PostedListing>;
   createVisit(input: VisitCreateInput): Promise<ScheduledVisit>;
   getListings(): Promise<PostedListing[]>;
   getVisits(): Promise<ScheduledVisit[]>;
@@ -23,16 +30,19 @@ export interface SuiteStore {
 }
 
 class InMemorySuiteStore implements SuiteStore {
-  private listingCounter = 1;
+  private readonly listingCounterByPortal: Record<ListingPortal, number> = {
+    "99acres": 1,
+    magicbricks: 1
+  };
   private visitCounter = 1;
   private readonly listings: PostedListing[] = [];
   private readonly visits: ScheduledVisit[] = [];
 
-  async createListing(draft: PropertyPostDraft): Promise<PostedListing> {
-    const id = `A99-${String(this.listingCounter++).padStart(5, "0")}`;
+  async createListing(draft: PropertyPostDraft, portal: ListingPortal): Promise<PostedListing> {
+    const id = formatListingId(this.listingCounterByPortal[portal]++, portal);
     const record: PostedListing = {
       id,
-      portal: "99acres",
+      portal,
       status: "active",
       createdAtIso: new Date().toISOString(),
       draft
@@ -77,7 +87,7 @@ class PostgresSuiteStore implements SuiteStore {
     });
   }
 
-  async createListing(draft: PropertyPostDraft): Promise<PostedListing> {
+  async createListing(draft: PropertyPostDraft, portal: ListingPortal): Promise<PostedListing> {
     await this.ensureInitialized();
     const result = await this.pool.query<{
       id: number;
@@ -86,13 +96,13 @@ class PostgresSuiteStore implements SuiteStore {
       `INSERT INTO listings (portal, status, draft)
        VALUES ($1, $2, $3::jsonb)
        RETURNING id, created_at`,
-      ["99acres", "active", JSON.stringify(draft)]
+      [portal, "active", JSON.stringify(draft)]
     );
 
     const row = result.rows[0];
     return {
-      id: formatListingId(row.id),
-      portal: "99acres",
+      id: formatListingId(row.id, portal),
+      portal,
       status: "active",
       createdAtIso: row.created_at.toISOString(),
       draft
@@ -120,7 +130,7 @@ class PostgresSuiteStore implements SuiteStore {
     await this.ensureInitialized();
     const result = await this.pool.query<{
       id: number;
-      portal: "99acres";
+      portal: string;
       status: "active";
       created_at: Date;
       draft: PropertyPostDraft;
@@ -130,13 +140,16 @@ class PostgresSuiteStore implements SuiteStore {
        ORDER BY id DESC`
     );
 
-    return result.rows.map((row) => ({
-      id: formatListingId(row.id),
-      portal: row.portal,
-      status: row.status,
-      createdAtIso: row.created_at.toISOString(),
-      draft: row.draft
-    }));
+    return result.rows.map((row) => {
+      const portal = normalizePortal(row.portal);
+      return {
+        id: formatListingId(row.id, portal),
+        portal,
+        status: row.status,
+        createdAtIso: row.created_at.toISOString(),
+        draft: row.draft
+      };
+    });
   }
 
   async getVisits(): Promise<ScheduledVisit[]> {
@@ -239,8 +252,13 @@ class PostgresSuiteStore implements SuiteStore {
   }
 }
 
-function formatListingId(value: number): string {
-  return `A99-${String(value).padStart(5, "0")}`;
+function formatListingId(value: number, portal: ListingPortal): string {
+  const prefix = portal === "magicbricks" ? "MB" : "A99";
+  return `${prefix}-${String(value).padStart(5, "0")}`;
+}
+
+function normalizePortal(value: string): ListingPortal {
+  return value.toLowerCase() === "magicbricks" ? "magicbricks" : "99acres";
 }
 
 function formatVisitId(value: number): string {

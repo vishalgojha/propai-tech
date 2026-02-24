@@ -2,12 +2,15 @@ import type { LeadInput, PropertyMatch } from "../types.js";
 
 export type ToolName =
   | "post_to_99acres"
+  | "post_to_magicbricks"
   | "match_property_to_buyer"
   | "group_requirement_match_scan"
   | "ads_lead_qualification"
   | "send_whatsapp_followup"
   | "schedule_site_visit"
   | "generate_performance_report";
+
+export type ListingPortal = "99acres" | "magicbricks";
 
 export type ChatRequest = {
   message: string;
@@ -63,7 +66,7 @@ export type PropertyPostDraft = {
 
 export type PostedListing = {
   id: string;
-  portal: "99acres";
+  portal: ListingPortal;
   status: "active";
   createdAtIso: string;
   draft: PropertyPostDraft;

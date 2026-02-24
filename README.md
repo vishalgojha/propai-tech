@@ -14,6 +14,7 @@ The `wacli-1.0.0` ZIP you shared is a skill definition. This app uses those comm
 This repo now includes a tool-planned chat endpoint (`POST /agent/chat`) that can orchestrate:
 
 - `post_to_99acres` (demo portal publish flow)
+- `post_to_magicbricks` (demo portal publish flow)
 - `match_property_to_buyer` (lead -> shortlist)
 - `send_whatsapp_followup` (uses `wacli`, respects dry-run)
 - `schedule_site_visit` (demo scheduler)
@@ -66,10 +67,10 @@ Persistence notes:
 - Tables are auto-created on first write.
 - If `DATABASE_URL` is not set, the app falls back to in-memory storage.
 
-99acres integration naming:
+Publishing integration naming:
 - Adapter interface: `PropaiLiveAdapter`
 - Concrete bridge: `PropaiLiveBridge`
-- `post_to_99acres` uses this bridge and falls back to simulated publish when bridge config is missing.
+- `post_to_99acres` and `post_to_magicbricks` use this bridge and fall back to simulated publish when bridge config is missing.
 
 Python template decision (`realtor-suite-agent.py`):
 - Chosen path: **port selected tool-schema ideas to TypeScript**, no Python sidecar.
@@ -225,6 +226,8 @@ npm run propai -- connectors --json
 
 4. Optional vars for integrations:
 - `PROPAI_LIVE_POST_URL`
+- `PROPAI_LIVE_99ACRES_POST_URL`
+- `PROPAI_LIVE_MAGICBRICKS_POST_URL`
 - `PROPAI_LIVE_API_KEY`
 - `PROPAI_LIVE_TIMEOUT_MS`
 - `PROPAI_LIVE_MAX_RETRIES`
@@ -271,7 +274,7 @@ curl -X POST http://localhost:8080/agent/chat \
   -H "x-agent-api-key: your-key" \
   -H "x-agent-role: realtor_admin" \
   -d '{
-    "message": "Post my 3 BHK in Wakad to 99acres and send WhatsApp follow-up",
+    "message": "Post my 3 BHK in Wakad to 99acres and MagicBricks, then send WhatsApp follow-up",
     "recipient": "+919999999999",
     "dryRun": true
   }'
@@ -349,7 +352,9 @@ curl -X POST http://localhost:8080/whatsapp/pairing/approve \
 
 - `PORT` (default: `8080`)
 - `DATABASE_URL` (optional, enables PostgreSQL persistence)
-- `PROPAI_LIVE_POST_URL` (optional, real publish endpoint for Propai Live bridge)
+- `PROPAI_LIVE_POST_URL` (optional, shared publish endpoint for Propai Live bridge)
+- `PROPAI_LIVE_99ACRES_POST_URL` (optional, overrides shared publish endpoint for 99acres)
+- `PROPAI_LIVE_MAGICBRICKS_POST_URL` (optional, overrides shared publish endpoint for MagicBricks)
 - `PROPAI_LIVE_API_KEY` (optional, sent as `X-API-Key`)
 - `PROPAI_LIVE_TIMEOUT_MS` (default `8000`, request timeout per attempt)
 - `PROPAI_LIVE_MAX_RETRIES` (default `2`, retries on 429/5xx and transient failures)

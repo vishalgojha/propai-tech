@@ -5,6 +5,7 @@ const TOOL_ORDER: ToolName[] = [
   "ads_lead_qualification",
   "match_property_to_buyer",
   "post_to_99acres",
+  "post_to_magicbricks",
   "send_whatsapp_followup",
   "schedule_site_visit",
   "generate_performance_report"
@@ -34,6 +35,10 @@ export function planToolCalls(message: string): PlannedToolCall[] {
 
   if (/\b(post|publish|list)\b/.test(lower) && /\b99acres\b/.test(lower)) {
     planned.set("post_to_99acres", "User asked to publish a listing to 99acres.");
+  }
+
+  if (/\b(post|publish|list)\b/.test(lower) && /\bmagic\s*bricks?\b/.test(lower)) {
+    planned.set("post_to_magicbricks", "User asked to publish a listing to MagicBricks.");
   }
 
   if (/\b(whatsapp|follow[\s-]?up|broadcast|nurture)\b/.test(lower)) {

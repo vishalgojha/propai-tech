@@ -184,13 +184,24 @@ async function checkPropaiLive(
   pair: ConnectorCredentialPair | undefined
 ): Promise<Omit<ConnectorHealthItem, "connector">> {
   const postUrl = String(process.env.PROPAI_LIVE_POST_URL || "").trim();
+  const postUrl99Acres = String(process.env.PROPAI_LIVE_99ACRES_POST_URL || "").trim();
+  const postUrlMagicBricks = String(process.env.PROPAI_LIVE_MAGICBRICKS_POST_URL || "").trim();
   const apiKey = String(process.env.PROPAI_LIVE_API_KEY || "").trim();
+  const hasPostUrl = Boolean(postUrl || postUrl99Acres || postUrlMagicBricks);
 
   const checks: ConnectorCheck[] = [
     {
       name: "post_url",
-      ok: postUrl.length > 0,
-      detail: postUrl.length > 0 ? `Configured: ${postUrl}` : "PROPAI_LIVE_POST_URL missing."
+      ok: hasPostUrl,
+      detail: hasPostUrl
+        ? [
+            postUrl ? `shared=${postUrl}` : null,
+            postUrl99Acres ? `99acres=${postUrl99Acres}` : null,
+            postUrlMagicBricks ? `magicbricks=${postUrlMagicBricks}` : null
+          ]
+            .filter(Boolean)
+            .join(" | ")
+        : "Missing publish URL. Set PROPAI_LIVE_POST_URL or portal-specific URLs."
     },
     {
       name: "api_key",
@@ -201,7 +212,7 @@ async function checkPropaiLive(
 
   return {
     pair: pair || unknownPair("propai_live_bridge"),
-    status: postUrl.length > 0 ? "healthy" : "unconfigured",
+    status: hasPostUrl ? "healthy" : "unconfigured",
     checks
   };
 }

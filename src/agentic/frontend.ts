@@ -34,7 +34,7 @@ export const FRONTEND_HTML = `<!doctype html>
               <textarea
                 id="message"
                 rows="5"
-                placeholder="Post my 3 BHK in Wakad to 99acres and send WhatsApp follow-up"
+                placeholder="Post my 3 BHK in Wakad to 99acres and MagicBricks, then send WhatsApp follow-up"
               ></textarea>
             </label>
 

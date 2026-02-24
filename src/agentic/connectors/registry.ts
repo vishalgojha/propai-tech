@@ -39,7 +39,7 @@ const CONNECTORS: Connector[] = [
     provider: "propai.live",
     domain: "publishing",
     capabilities: ["listing_publish"],
-    description: "Publishing adapter for 99acres listing workflows."
+    description: "Publishing adapter for 99acres and MagicBricks listing workflows."
   },
   {
     id: "postgres_store",
@@ -76,6 +76,16 @@ const CREDENTIAL_DEFS: Array<Pick<Credential, "id" | "name" | "envVar">> = [
     envVar: "PROPAI_LIVE_POST_URL"
   },
   {
+    id: "propai_live_99acres_post_url",
+    name: "PropAI Live 99acres Post URL",
+    envVar: "PROPAI_LIVE_99ACRES_POST_URL"
+  },
+  {
+    id: "propai_live_magicbricks_post_url",
+    name: "PropAI Live MagicBricks Post URL",
+    envVar: "PROPAI_LIVE_MAGICBRICKS_POST_URL"
+  },
+  {
     id: "propai_live_api_key",
     name: "PropAI Live API Key",
     envVar: "PROPAI_LIVE_API_KEY"
@@ -109,6 +119,10 @@ export function buildConnectorCredentialPairs(
   credentials: Credential[] = buildCredentials()
 ): ConnectorCredentialPair[] {
   const has = (credentialId: string) => credentials.some((item) => item.id === credentialId && item.present);
+  const hasAnyPropaiLivePostUrl =
+    has("propai_live_post_url") ||
+    has("propai_live_99acres_post_url") ||
+    has("propai_live_magicbricks_post_url");
 
   return [
     {
@@ -142,11 +156,16 @@ export function buildConnectorCredentialPairs(
     {
       id: "pair-propai-live",
       connectorId: "propai_live_bridge",
-      credentialIds: ["propai_live_post_url", "propai_live_api_key"],
-      status: has("propai_live_post_url") ? "connected" : "missing_credentials",
-      note: has("propai_live_post_url")
+      credentialIds: [
+        "propai_live_post_url",
+        "propai_live_99acres_post_url",
+        "propai_live_magicbricks_post_url",
+        "propai_live_api_key"
+      ],
+      status: hasAnyPropaiLivePostUrl ? "connected" : "missing_credentials",
+      note: hasAnyPropaiLivePostUrl
         ? "Publish endpoint configured."
-        : "Set PROPAI_LIVE_POST_URL to enable external posting."
+        : "Set PROPAI_LIVE_POST_URL (or portal-specific URLs) to enable external posting."
     },
     {
       id: "pair-postgres",

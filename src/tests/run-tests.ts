@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import { planToolCalls } from "../agentic/suite/planner.js";
-import { runGeneratePerformanceReport, runPostTo99Acres, runScheduleSiteVisit } from "../agentic/suite/toolkit.js";
+import {
+  runGeneratePerformanceReport,
+  runPostTo99Acres,
+  runPostToMagicBricks,
+  runScheduleSiteVisit
+} from "../agentic/suite/toolkit.js";
 import { startAgenticServer } from "../agentic/server.js";
 
 type TestCase = {
@@ -49,6 +54,13 @@ const tests: TestCase[] = [
     }
   },
   {
+    name: "planner detects magicbricks publish intent",
+    run: () => {
+      const plan = planToolCalls("Publish this listing to MagicBricks");
+      assert.equal(plan.some((item) => item.tool === "post_to_magicbricks"), true);
+    }
+  },
+  {
     name: "toolkit stores listing and visit then reports activity",
     run: async () => {
       const postResult = await runPostTo99Acres({
@@ -56,6 +68,12 @@ const tests: TestCase[] = [
         dryRun: true
       });
       assert.equal(postResult.ok, true);
+
+      const magicBricksResult = await runPostToMagicBricks({
+        message: "Post my 2 BHK apartment in Baner to magic bricks",
+        dryRun: true
+      });
+      assert.equal(magicBricksResult.ok, true);
 
       const scheduleResult = await runScheduleSiteVisit({
         message: "Schedule site visit tomorrow in Wakad",
@@ -74,10 +92,13 @@ const tests: TestCase[] = [
         activeListings: number;
         scheduledVisits: number;
         totalListings: number;
+        listingsByPortal: Record<string, number>;
       };
       assert.ok(data.totalListings >= 1);
       assert.ok(data.activeListings >= 1);
       assert.ok(data.scheduledVisits >= 1);
+      assert.ok((data.listingsByPortal["99acres"] || 0) >= 1);
+      assert.ok((data.listingsByPortal.magicbricks || 0) >= 1);
     }
   },
   {

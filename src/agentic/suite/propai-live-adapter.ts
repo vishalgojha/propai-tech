@@ -15,4 +15,5 @@ export type PropaiLivePublishResult = {
 
 export interface PropaiLiveAdapter {
   publishTo99Acres(input: PropaiLivePublishRequest): Promise<PropaiLivePublishResult>;
+  publishToMagicBricks(input: PropaiLivePublishRequest): Promise<PropaiLivePublishResult>;
 }

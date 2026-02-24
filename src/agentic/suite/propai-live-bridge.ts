@@ -1,7 +1,11 @@
 import type { PropaiLiveAdapter, PropaiLivePublishRequest, PropaiLivePublishResult } from "./propai-live-adapter.js";
 
+type PublishPortal = "99acres" | "magicbricks";
+
 type PropaiLiveBridgeConfig = {
   postUrl?: string;
+  postUrl99Acres?: string;
+  postUrlMagicBricks?: string;
   apiKey?: string;
   timeoutMs: number;
   maxRetries: number;
@@ -12,8 +16,11 @@ export class PropaiLiveBridge implements PropaiLiveAdapter {
   private readonly config: PropaiLiveBridgeConfig;
 
   constructor(config?: PropaiLiveBridgeConfig) {
+    const defaultPostUrl = process.env.PROPAI_LIVE_POST_URL;
     this.config = config || {
-      postUrl: process.env.PROPAI_LIVE_POST_URL,
+      postUrl: defaultPostUrl,
+      postUrl99Acres: process.env.PROPAI_LIVE_99ACRES_POST_URL || defaultPostUrl,
+      postUrlMagicBricks: process.env.PROPAI_LIVE_MAGICBRICKS_POST_URL || defaultPostUrl,
       apiKey: process.env.PROPAI_LIVE_API_KEY,
       timeoutMs: Number(process.env.PROPAI_LIVE_TIMEOUT_MS || 8000),
       maxRetries: Number(process.env.PROPAI_LIVE_MAX_RETRIES || 2),
@@ -22,20 +29,34 @@ export class PropaiLiveBridge implements PropaiLiveAdapter {
   }
 
   async publishTo99Acres(input: PropaiLivePublishRequest): Promise<PropaiLivePublishResult> {
+    return this.publishToPortal(input, "99acres");
+  }
+
+  async publishToMagicBricks(input: PropaiLivePublishRequest): Promise<PropaiLivePublishResult> {
+    return this.publishToPortal(input, "magicbricks");
+  }
+
+  private async publishToPortal(
+    input: PropaiLivePublishRequest,
+    portal: PublishPortal
+  ): Promise<PropaiLivePublishResult> {
+    const postUrl = this.resolvePostUrl(portal);
+    const envHint = this.portalEnvHint(portal);
+
     if (input.dryRun) {
       return {
         ok: true,
         status: "simulated",
-        summary: "Dry run enabled. Simulated publish to 99acres via Propai Live.",
+        summary: `Dry run enabled. Simulated publish to ${portal} via Propai Live.`,
         externalListingId: `SIM-${Date.now()}`
       };
     }
 
-    if (!this.config.postUrl) {
+    if (!postUrl) {
       return {
         ok: true,
         status: "simulated",
-        summary: "PROPAI_LIVE_POST_URL is not configured. Used local mock publish fallback.",
+        summary: `${envHint} is not configured. Used local mock publish fallback for ${portal}.`,
         externalListingId: `MOCK-${Date.now()}`
       };
     }
@@ -45,14 +66,14 @@ export class PropaiLiveBridge implements PropaiLiveAdapter {
 
     for (let attempt = 1; attempt <= totalAttempts; attempt += 1) {
       try {
-        const response = await fetchWithTimeout(this.config.postUrl, {
+        const response = await fetchWithTimeout(postUrl, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             ...(this.config.apiKey ? { "X-API-Key": this.config.apiKey } : {})
           },
           body: JSON.stringify({
-            portal: "99acres",
+            portal,
             listing: input.draft
           })
         }, this.config.timeoutMs);
@@ -75,7 +96,7 @@ export class PropaiLiveBridge implements PropaiLiveAdapter {
         return {
           ok: true,
           status: "posted",
-          summary: `Published to 99acres via Propai Live on attempt ${attempt}.`,
+          summary: `Published to ${portal} via Propai Live on attempt ${attempt}.`,
           externalListingId,
           raw
         };
@@ -93,6 +114,20 @@ export class PropaiLiveBridge implements PropaiLiveAdapter {
       status: "failed",
       summary: `Propai Live publish request failed after ${totalAttempts} attempt(s): ${lastErrorMessage}.`
     };
+  }
+
+  private resolvePostUrl(portal: PublishPortal): string | undefined {
+    if (portal === "99acres") {
+      return this.config.postUrl99Acres || this.config.postUrl;
+    }
+    return this.config.postUrlMagicBricks || this.config.postUrl;
+  }
+
+  private portalEnvHint(portal: PublishPortal): string {
+    if (portal === "99acres") {
+      return "PROPAI_LIVE_99ACRES_POST_URL or PROPAI_LIVE_POST_URL";
+    }
+    return "PROPAI_LIVE_MAGICBRICKS_POST_URL or PROPAI_LIVE_POST_URL";
   }
 }
 

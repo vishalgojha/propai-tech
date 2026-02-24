@@ -1,4 +1,5 @@
 import type { PostedListing, ScheduledVisit } from "./types.js";
+import type { ListingPortal } from "./types.js";
 
 type Counters = {
   listing: number;
@@ -15,7 +16,12 @@ const visits: ScheduledVisit[] = [];
 
 export function createListingId(): string {
   const next = counters.listing++;
-  return `A99-${String(next).padStart(5, "0")}`;
+  return formatListingId(next, "99acres");
+}
+
+export function createListingIdForPortal(portal: ListingPortal): string {
+  const next = counters.listing++;
+  return formatListingId(next, portal);
 }
 
 export function createVisitId(): string {
@@ -37,4 +43,9 @@ export function getListings(): PostedListing[] {
 
 export function getVisits(): ScheduledVisit[] {
   return [...visits];
+}
+
+function formatListingId(value: number, portal: ListingPortal): string {
+  const prefix = portal === "magicbricks" ? "MB" : "A99";
+  return `${prefix}-${String(value).padStart(5, "0")}`;
 }
