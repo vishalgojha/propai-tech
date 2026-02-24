@@ -1,5 +1,8 @@
 # Indian Realtor Agentic App (with wacli)
 
+Handoff:
+- `HANDOFF.md` (current implementation snapshot, operational checklist, and next backlog)
+
 This project now includes an agentic workflow for Indian realtors, powered by:
 
 - Lead Intake Agent (extracts requirement from lead text)
