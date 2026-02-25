@@ -3,6 +3,7 @@ import { createDedupe } from "../../utils/dedupe.js";
 import { logger } from "../../utils/logger.js";
 import { loadRuntimeConfigOrThrow } from "../runtime-config.js";
 import { RealtorSuiteAgentEngine } from "../suite/engine.js";
+import { createGroupPostingService } from "../group-posting/service.js";
 import { checkInboundAccess } from "./inbound/access-control.js";
 import { sendWhatsappText } from "./outbound/send.js";
 import type { InboundEnvelope, MinimalWppMessage } from "./types.js";
@@ -15,6 +16,16 @@ export async function startRealtorWhatsappAgent(): Promise<void> {
   const dmPolicy = runtimeConfig.whatsappDmPolicy;
   const allowFrom = runtimeConfig.whatsappAllowFrom;
   const engine = new RealtorSuiteAgentEngine();
+  const groupPostingService = createGroupPostingService({
+    databaseUrl: runtimeConfig.databaseUrl,
+    enabled: runtimeConfig.groupPostingEnabled,
+    intervalMs: runtimeConfig.groupPostingIntervalMs,
+    batchSize: runtimeConfig.groupPostingBatchSize,
+    processingLeaseMs: runtimeConfig.groupPostingProcessingLeaseMs,
+    defaultTargets: runtimeConfig.groupPostingDefaultTargets,
+    schedulerDryRun: runtimeConfig.groupPostingSchedulerDryRun
+  });
+  groupPostingService.start();
 
   const client = await create({
     session,
@@ -36,6 +47,29 @@ export async function startRealtorWhatsappAgent(): Promise<void> {
 
       if (dedupe.seen(inbound.messageId)) {
         logger.info("Duplicate message ignored", { messageId: inbound.messageId });
+        return;
+      }
+
+      if (inbound.isFromMe) {
+        logger.info("Own message ignored", { messageId: inbound.messageId, from: inbound.fromJid });
+        return;
+      }
+
+      if (inbound.isGroup) {
+        const accepted = await tryIngestBrokerGroupInput({
+          client,
+          inbound,
+          enabled: runtimeConfig.groupPostingIntakeEnabled,
+          allowedChats: runtimeConfig.groupPostingInputChats,
+          ackEnabled: runtimeConfig.groupPostingAckInput,
+          groupPostingService
+        });
+        if (!accepted) {
+          logger.info("Inbound group message ignored", {
+            messageId: inbound.messageId,
+            from: inbound.fromJid
+          });
+        }
         return;
       }
 
@@ -75,7 +109,8 @@ export async function startRealtorWhatsappAgent(): Promise<void> {
 
   logger.info("Single-agent WhatsApp helper is ready", {
     dmPolicy,
-    allowFromCount: allowFrom.length
+    allowFromCount: allowFrom.length,
+    groupPostingIntakeEnabled: runtimeConfig.groupPostingIntakeEnabled
   });
 }
 
@@ -107,4 +142,53 @@ function jidToE164(jid: string): string | null {
   const digits = local.replace(/[^\d]/g, "");
   if (!digits || digits.length < 8 || digits.length > 15) return null;
   return `+${digits}`;
+}
+
+async function tryIngestBrokerGroupInput(input: {
+  client: { sendText: (to: string, text: string) => Promise<unknown> };
+  inbound: InboundEnvelope;
+  enabled: boolean;
+  allowedChats: string[];
+  ackEnabled: boolean;
+  groupPostingService: ReturnType<typeof createGroupPostingService>;
+}): Promise<boolean> {
+  if (!input.enabled) return false;
+  if (input.inbound.isFromMe) return false;
+  if (!isAllowedGroupChat(input.inbound.fromJid, input.allowedChats)) return false;
+
+  const queued = await input.groupPostingService.intake({
+    content: input.inbound.body,
+    source: "whatsapp",
+    sourceRef: input.inbound.messageId,
+    brokerContact: input.inbound.fromE164 || input.inbound.fromJid
+  });
+
+  logger.info("Broker group message queued for scheduled posting", {
+    id: queued.id,
+    sourceChat: input.inbound.fromJid,
+    scheduleMode: queued.scheduleMode,
+    nextPostAtIso: queued.nextPostAtIso
+  });
+
+  if (input.ackEnabled) {
+    await sendWhatsappText(input.client, input.inbound.fromJid, `Saved for scheduled posting. Queue ID: ${queued.id}`);
+  }
+
+  return true;
+}
+
+function isAllowedGroupChat(fromJid: string, allowedChats: string[]): boolean {
+  if (allowedChats.length === 0) return false;
+  const normalizedJid = String(fromJid || "").trim().toLowerCase();
+  const localPart = normalizedJid.split("@")[0] || "";
+
+  return allowedChats.some((value) => {
+    const normalized = String(value || "").trim().toLowerCase();
+    if (!normalized) return false;
+    if (normalized === "*") return true;
+    if (normalized === normalizedJid) return true;
+    if (normalized === localPart) return true;
+    if (normalized.endsWith("@g.us") && normalized === normalizedJid) return true;
+    return false;
+  });
 }
