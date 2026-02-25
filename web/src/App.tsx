@@ -23,6 +23,16 @@ type SessionStartResponse = {
   error?: string;
 };
 
+type SessionEventTokenResponse = {
+  ok: boolean;
+  result?: {
+    sessionId: string;
+    token: string;
+    expiresAtIso: string;
+  };
+  error?: string;
+};
+
 const SESSION_STORAGE_KEY = "propai_session_id";
 const MODEL_STORAGE_KEY = "propai_openrouter_model";
 
@@ -41,6 +51,7 @@ export function App() {
 
   const sessionEventsRef = useRef<EventSource | null>(null);
   const sessionEventsKeyRef = useRef("");
+  const sessionEventTokenRef = useRef("");
   const sessionStreamErrorLoggedRef = useRef(false);
   const sessionIdRef = useRef(sessionId);
 
@@ -74,31 +85,44 @@ export function App() {
       sessionEventsRef.current = null;
     }
     sessionEventsKeyRef.current = "";
+    sessionEventTokenRef.current = "";
     sessionStreamErrorLoggedRef.current = false;
   }, []);
 
+  const fetchSessionEventToken = useCallback(
+    async (sessionId: string): Promise<string> => {
+      const response = await fetch(`/agent/session/${encodeURIComponent(sessionId)}/events/token`, {
+        method: "POST",
+        headers,
+        body: "{}"
+      });
+      const payload = (await response.json()) as SessionEventTokenResponse;
+      if (!payload.ok || !payload.result?.token) {
+        throw new Error(payload.error || "Failed to issue session event token");
+      }
+      sessionEventTokenRef.current = payload.result.token;
+      return payload.result.token;
+    },
+    [headers]
+  );
+
   const connectSessionEvents = useCallback(
-    (forceReconnect: boolean) => {
+    async (forceReconnect: boolean) => {
       if (!sessionIdRef.current || typeof EventSource === "undefined") return;
-
-      const params = new URLSearchParams();
-      if (apiKey.trim()) params.set("apiKey", apiKey.trim());
-      if (role.trim()) params.set("role", role.trim());
-
-      const streamUrl =
-        `/agent/session/${encodeURIComponent(sessionIdRef.current)}/events` +
-        (params.toString() ? `?${params.toString()}` : "");
 
       if (
         !forceReconnect &&
         sessionEventsRef.current &&
-        sessionEventsKeyRef.current === streamUrl
+        sessionEventsKeyRef.current === sessionIdRef.current
       ) {
         return;
       }
 
+      const token = await fetchSessionEventToken(sessionIdRef.current);
+      const streamUrl = `/agent/session/${encodeURIComponent(sessionIdRef.current)}/events?token=${encodeURIComponent(token)}`;
+
       closeSessionEvents();
-      sessionEventsKeyRef.current = streamUrl;
+      sessionEventsKeyRef.current = sessionIdRef.current;
 
       const source = new EventSource(streamUrl);
       sessionEventsRef.current = source;
@@ -132,12 +156,14 @@ export function App() {
         }
       });
     },
-    [apiKey, closeSessionEvents, log, role]
+    [closeSessionEvents, fetchSessionEventToken, log]
   );
 
   useEffect(() => {
     if (sessionId) {
-      connectSessionEvents(false);
+      connectSessionEvents(false).catch((error) => {
+        log("GET /agent/session/:id/events (token error)", String(error));
+      });
     }
   }, [sessionId, apiKey, role, connectSessionEvents]);
 
@@ -170,7 +196,7 @@ export function App() {
       sessionIdRef.current = nextSession.id;
       localStorage.setItem(SESSION_STORAGE_KEY, nextSession.id);
       setPendingActions(nextSession.pendingActions || []);
-      connectSessionEvents(true);
+      await connectSessionEvents(true);
       log(`POST /agent/session/start (${response.status})`, payload);
     },
     [connectSessionEvents, headers, log]
@@ -178,7 +204,7 @@ export function App() {
 
   const ensureSession = useCallback(async () => {
     if (sessionIdRef.current) {
-      connectSessionEvents(false);
+      await connectSessionEvents(false);
       return;
     }
     await startSession(false);

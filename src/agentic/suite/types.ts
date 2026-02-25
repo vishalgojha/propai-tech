@@ -1,4 +1,5 @@
 import type { LeadInput, PropertyMatch } from "../types.js";
+import type { SkillPipelineResult } from "../skills/pipeline.js";
 
 export type ToolName =
   | "post_to_99acres"
@@ -63,6 +64,7 @@ export type ChatResponse = {
   toolResults: ToolExecutionRecord[];
   events: AgentActionEvent[];
   suggestedNextPrompts: string[];
+  skillsPipeline?: SkillPipelineResult;
 };
 
 export type SessionMessageRole = "user" | "assistant" | "system";
@@ -107,6 +109,7 @@ export type AgentSessionTurnResponse = {
   blockedTools: ToolName[];
   pendingActions: PendingToolActionView[];
   suggestedNextPrompts: string[];
+  skillsPipeline?: SkillPipelineResult;
 };
 
 export type SessionExecutionRecord = {

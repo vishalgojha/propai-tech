@@ -5,6 +5,7 @@ import { planToolCalls } from "./planner.js";
 import { getToolPolicy, isExternalActionTool, requiresToolApproval } from "./tool-policy.js";
 import { getSuiteStore } from "./store.js";
 import { getSuiteSessionStore } from "./session-store.js";
+import { runSkillPipeline } from "../skills/pipeline.js";
 import {
   runAdsLeadQualification,
   runGeneratePerformanceReport,
@@ -166,6 +167,12 @@ export class RealtorSuiteSessionManager {
       };
     }
 
+    const skillsPipeline = runSkillPipeline({
+      message: input.message,
+      lead: input.lead,
+      recipient: input.recipient
+    });
+
     const plan = planToolCalls(input.message);
     if (plan.length === 0) {
       const note = "No tool plan triggered.";
@@ -182,7 +189,8 @@ export class RealtorSuiteSessionManager {
           queuedActions: [],
           blockedTools: [],
           pendingActions: toPendingViews(session.pendingActions),
-          suggestedNextPrompts: SUGGESTED_PROMPTS_NO_PLAN
+          suggestedNextPrompts: SUGGESTED_PROMPTS_NO_PLAN,
+          skillsPipeline
         }
       };
     }
@@ -206,7 +214,8 @@ export class RealtorSuiteSessionManager {
           queuedActions,
           blockedTools,
           pendingActions: toPendingViews(session.pendingActions),
-          suggestedNextPrompts: SUGGESTED_PROMPTS_WITH_PLAN
+          suggestedNextPrompts: SUGGESTED_PROMPTS_WITH_PLAN,
+          skillsPipeline
         }
       };
     }
@@ -267,7 +276,8 @@ export class RealtorSuiteSessionManager {
         queuedActions,
         blockedTools,
         pendingActions: toPendingViews(session.pendingActions),
-        suggestedNextPrompts: SUGGESTED_PROMPTS_WITH_PLAN
+        suggestedNextPrompts: SUGGESTED_PROMPTS_WITH_PLAN,
+        skillsPipeline
       }
     };
   }

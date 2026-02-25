@@ -12,6 +12,7 @@ import {
 import { generateAssistantText } from "../../llm/chat.js";
 import { evaluateGuardrails } from "./guardrails.js";
 import { getSuiteStore } from "./store.js";
+import { runSkillPipeline } from "../skills/pipeline.js";
 import type {
   AgentActionEvent,
   ChatRequest,
@@ -50,6 +51,12 @@ export class RealtorSuiteAgentEngine {
       };
     }
 
+    const skillsPipeline = runSkillPipeline({
+      message: input.message,
+      lead: input.lead,
+      recipient: input.recipient
+    });
+
     const plan = planToolCalls(input.message);
     if (plan.length === 0) {
       const assistantMessage = await buildAssistantMessage(input, plan, []);
@@ -72,7 +79,8 @@ export class RealtorSuiteAgentEngine {
           "Publish my 2 BHK in Baner to MagicBricks",
           "Match properties for a 2 BHK buyer in Whitefield under 1.2 cr",
           "Send WhatsApp follow-up to my new lead"
-        ]
+        ],
+        skillsPipeline
       };
     }
 
@@ -115,7 +123,8 @@ export class RealtorSuiteAgentEngine {
         "Generate performance report for current listings",
         "Schedule site visit tomorrow for this lead in Wakad",
         "Send follow-up WhatsApp to +919999999999"
-      ]
+      ],
+      skillsPipeline
     };
   }
 }

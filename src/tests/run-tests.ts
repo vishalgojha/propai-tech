@@ -14,6 +14,8 @@ import {
   runSendWhatsappFollowup
 } from "../agentic/suite/toolkit.js";
 import { startAgenticServer } from "../agentic/server.js";
+import { GroupPostingService } from "../agentic/group-posting/service.js";
+import { createGroupPostStore } from "../agentic/group-posting/store.js";
 
 type TestCase = {
   name: string;
@@ -223,6 +225,12 @@ const tests: TestCase[] = [
               timestampIso: string;
             }>;
             suggestedNextPrompts: string[];
+            skillsPipeline?: {
+              dataset_mode: string;
+              message_parser: unknown[];
+              lead_extractor: unknown[];
+              action_suggester: unknown[];
+            };
           };
         };
 
@@ -232,6 +240,10 @@ const tests: TestCase[] = [
         assert.ok(Array.isArray(payload.result.toolResults));
         assert.ok(Array.isArray(payload.result.events));
         assert.ok(Array.isArray(payload.result.suggestedNextPrompts));
+        assert.equal(typeof payload.result.skillsPipeline?.dataset_mode, "string");
+        assert.ok(Array.isArray(payload.result.skillsPipeline?.message_parser));
+        assert.ok(Array.isArray(payload.result.skillsPipeline?.lead_extractor));
+        assert.ok(Array.isArray(payload.result.skillsPipeline?.action_suggester));
       });
     }
   },
@@ -260,6 +272,361 @@ const tests: TestCase[] = [
         assert.ok(Array.isArray(payload.result.pairs));
         assert.ok(Array.isArray(payload.result.connectors));
       });
+    }
+  },
+  {
+    name: "/group-posting intake, queue listing, and manual dispatch work",
+    run: async () => {
+      const previousApiKey = process.env.AGENT_API_KEY;
+      process.env.AGENT_ALLOWED_ROLES = "realtor_admin,ops";
+      process.env.AGENT_API_KEY = "gp-key";
+
+      try {
+        await withServer(async (baseUrl) => {
+          const intake = await fetch(`${baseUrl}/group-posting/intake`, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-agent-api-key": "gp-key",
+              "x-agent-role": "realtor_admin"
+            },
+            body: JSON.stringify({
+              content: "New 3 BHK listing in Wakad, urgent seller requirement",
+              targets: ["sales-team@g.us"],
+              scheduleMode: "once",
+              source: "api"
+            })
+          });
+          assert.equal(intake.status, 200);
+          const intakePayload = (await intake.json()) as {
+            ok: boolean;
+            result: {
+              item: {
+                id: string;
+                status: string;
+                targets: string[];
+              };
+            };
+          };
+          assert.equal(intakePayload.ok, true);
+          const itemId = intakePayload.result.item.id;
+          assert.equal(typeof itemId, "string");
+          assert.equal(intakePayload.result.item.status, "queued");
+          assert.ok(intakePayload.result.item.targets.includes("sales-team@g.us"));
+
+          const queue = await fetch(`${baseUrl}/group-posting/queue?status=queued&limit=20`, {
+            method: "GET",
+            headers: {
+              "x-agent-api-key": "gp-key",
+              "x-agent-role": "realtor_admin"
+            }
+          });
+          assert.equal(queue.status, 200);
+          const queuePayload = (await queue.json()) as {
+            ok: boolean;
+            result: {
+              items: Array<{ id: string; status: string }>;
+            };
+          };
+          assert.equal(queuePayload.ok, true);
+          assert.ok(queuePayload.result.items.some((item) => item.id === itemId));
+
+          const dispatch = await fetch(`${baseUrl}/group-posting/dispatch`, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-agent-api-key": "gp-key",
+              "x-agent-role": "realtor_admin"
+            },
+            body: JSON.stringify({
+              dryRun: true
+            })
+          });
+          assert.equal(dispatch.status, 200);
+          const dispatchPayload = (await dispatch.json()) as {
+            ok: boolean;
+            result: {
+              picked: number;
+              sent: number;
+            };
+          };
+          assert.equal(dispatchPayload.ok, true);
+          assert.ok(dispatchPayload.result.picked >= 1);
+          assert.ok(dispatchPayload.result.sent >= 1);
+
+          const status = await fetch(`${baseUrl}/group-posting/status`, {
+            method: "GET",
+            headers: {
+              "x-agent-api-key": "gp-key",
+              "x-agent-role": "realtor_admin"
+            }
+          });
+          assert.equal(status.status, 200);
+          const statusPayload = (await status.json()) as {
+            ok: boolean;
+            result: {
+              queue: {
+                sent: number;
+              };
+            };
+          };
+          assert.equal(statusPayload.ok, true);
+          assert.ok(statusPayload.result.queue.sent >= 1);
+        });
+      } finally {
+        if (previousApiKey === undefined) {
+          delete process.env.AGENT_API_KEY;
+        } else {
+          process.env.AGENT_API_KEY = previousApiKey;
+        }
+      }
+    }
+  },
+  {
+    name: "/group-posting recurring daily schedule reschedules then completes",
+    run: async () => {
+      const previousApiKey = process.env.AGENT_API_KEY;
+      process.env.AGENT_ALLOWED_ROLES = "realtor_admin,ops";
+      process.env.AGENT_API_KEY = "gp-key";
+
+      try {
+        await withServer(async (baseUrl) => {
+          const intake = await fetch(`${baseUrl}/group-posting/intake`, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-agent-api-key": "gp-key",
+              "x-agent-role": "realtor_admin"
+            },
+            body: JSON.stringify({
+              content: "Buyer requirement: 2 BHK in Baner under 1.2cr",
+              targets: ["buyers-desk@g.us"],
+              scheduleMode: "daily",
+              repeatCount: 2
+            })
+          });
+          assert.equal(intake.status, 200);
+          const intakePayload = (await intake.json()) as {
+            ok: boolean;
+            result: {
+              item: {
+                id: string;
+              };
+            };
+          };
+          const itemId = intakePayload.result.item.id;
+
+          const firstDispatch = await fetch(`${baseUrl}/group-posting/dispatch`, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-agent-api-key": "gp-key",
+              "x-agent-role": "realtor_admin"
+            },
+            body: JSON.stringify({
+              dryRun: true,
+              nowIso: "2030-01-01T00:00:00.000Z"
+            })
+          });
+          assert.equal(firstDispatch.status, 200);
+          const firstPayload = (await firstDispatch.json()) as {
+            ok: boolean;
+            result: {
+              rescheduled: number;
+              items: Array<{ id: string; status: string }>;
+            };
+          };
+          assert.equal(firstPayload.ok, true);
+          assert.ok(firstPayload.result.rescheduled >= 1);
+          assert.ok(
+            firstPayload.result.items.some((item) => item.id === itemId && item.status === "rescheduled")
+          );
+
+          const secondDispatch = await fetch(`${baseUrl}/group-posting/dispatch`, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-agent-api-key": "gp-key",
+              "x-agent-role": "realtor_admin"
+            },
+            body: JSON.stringify({
+              dryRun: true,
+              nowIso: "2030-01-10T00:00:00.000Z"
+            })
+          });
+          assert.equal(secondDispatch.status, 200);
+          const secondPayload = (await secondDispatch.json()) as {
+            ok: boolean;
+            result: {
+              sent: number;
+              items: Array<{ id: string; status: string }>;
+            };
+          };
+          assert.equal(secondPayload.ok, true);
+          assert.ok(secondPayload.result.sent >= 1);
+          assert.ok(
+            secondPayload.result.items.some((item) => item.id === itemId && item.status === "sent")
+          );
+        });
+      } finally {
+        if (previousApiKey === undefined) {
+          delete process.env.AGENT_API_KEY;
+        } else {
+          process.env.AGENT_API_KEY = previousApiKey;
+        }
+      }
+    }
+  },
+  {
+    name: "/group-posting admin actions require configured AGENT_API_KEY",
+    run: async () => {
+      const previousApiKey = process.env.AGENT_API_KEY;
+      process.env.AGENT_ALLOWED_ROLES = "realtor_admin";
+      delete process.env.AGENT_API_KEY;
+
+      try {
+        await withServer(async (baseUrl) => {
+          const status = await fetch(`${baseUrl}/group-posting/status`, {
+            method: "GET",
+            headers: {
+              "x-agent-role": "realtor_admin"
+            }
+          });
+          assert.equal(status.status, 503);
+        });
+      } finally {
+        if (previousApiKey === undefined) {
+          delete process.env.AGENT_API_KEY;
+        } else {
+          process.env.AGENT_API_KEY = previousApiKey;
+        }
+      }
+    }
+  },
+  {
+    name: "/group-posting intake is idempotent when idempotencyKey is reused",
+    run: async () => {
+      const previousApiKey = process.env.AGENT_API_KEY;
+      process.env.AGENT_ALLOWED_ROLES = "realtor_admin,ops";
+      process.env.AGENT_API_KEY = "gp-key";
+
+      try {
+        await withServer(async (baseUrl) => {
+          const first = await fetch(`${baseUrl}/group-posting/intake`, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-agent-api-key": "gp-key",
+              "x-agent-role": "realtor_admin"
+            },
+            body: JSON.stringify({
+              content: "Listing: 3 BHK in Wakad",
+              targets: ["sales-team@g.us"],
+              idempotencyKey: "broker-msg-123"
+            })
+          });
+          assert.equal(first.status, 200);
+          const firstPayload = (await first.json()) as {
+            ok: boolean;
+            result: { item: { id: string } };
+          };
+
+          const second = await fetch(`${baseUrl}/group-posting/intake`, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-agent-api-key": "gp-key",
+              "x-agent-role": "realtor_admin"
+            },
+            body: JSON.stringify({
+              content: "Listing: 3 BHK in Wakad edited",
+              targets: ["sales-team@g.us"],
+              idempotencyKey: "broker-msg-123"
+            })
+          });
+          assert.equal(second.status, 200);
+          const secondPayload = (await second.json()) as {
+            ok: boolean;
+            result: { item: { id: string } };
+          };
+
+          assert.equal(firstPayload.ok, true);
+          assert.equal(secondPayload.ok, true);
+          assert.equal(firstPayload.result.item.id, secondPayload.result.item.id);
+        });
+      } finally {
+        if (previousApiKey === undefined) {
+          delete process.env.AGENT_API_KEY;
+        } else {
+          process.env.AGENT_API_KEY = previousApiKey;
+        }
+      }
+    }
+  },
+  {
+    name: "group-posting retries only failed targets and recovers stale processing items",
+    run: async () => {
+      const store = createGroupPostStore();
+      let cycle = 1;
+      const callLog: string[] = [];
+
+      const service = new GroupPostingService(store, {
+        enabled: false,
+        intervalMs: 60_000,
+        batchSize: 10,
+        processingLeaseMs: 5,
+        defaultTargets: [],
+        schedulerDryRun: false,
+        senderFactory: () => ({
+          sendText: async (to: string) => {
+            callLog.push(to);
+            if (to === "g2" && cycle === 1) {
+              return { ok: false, error: "temporary failure" };
+            }
+            return { ok: true };
+          }
+        })
+      });
+
+      const firstItem = await service.intake({
+        content: "Listing update for shared groups",
+        targets: ["g1", "g2"],
+        scheduleMode: "once",
+        source: "api"
+      });
+      const firstRun = await service.runDue({
+        dryRun: false,
+        nowIso: "2030-01-01T00:00:00.000Z"
+      });
+      assert.equal(firstRun.failed, 1);
+      assert.ok(firstRun.items.some((item) => item.id === firstItem.id && item.status === "failed"));
+
+      await service.requeue(firstItem.id, "2030-01-01T00:10:00.000Z");
+      cycle = 2;
+      const secondRun = await service.runDue({
+        dryRun: false,
+        nowIso: "2030-01-01T00:10:00.000Z"
+      });
+      assert.equal(secondRun.sent, 1);
+      assert.equal(callLog.filter((item) => item === "g1").length, 1);
+      assert.equal(callLog.filter((item) => item === "g2").length, 2);
+
+      const staleItem = await service.intake({
+        content: "Requirement update for stale-recovery test",
+        targets: ["g3"],
+        scheduleMode: "once",
+        source: "api"
+      });
+      const reserved = await store.reserveDue("2030-01-01T01:00:00.000Z", 1);
+      assert.ok(reserved.some((item) => item.id === staleItem.id));
+
+      const recoveryRun = await service.runDue({
+        dryRun: false,
+        nowIso: "2030-01-01T01:00:01.000Z"
+      });
+      assert.equal(recoveryRun.sent, 1);
+      assert.match(String(recoveryRun.reason || ""), /Recovered/i);
+      assert.equal(callLog.filter((item) => item === "g3").length, 1);
     }
   },
   {
@@ -404,6 +771,73 @@ const tests: TestCase[] = [
     }
   },
   {
+    name: "legacy execution routes enforce agent auth when AGENT_API_KEY is configured",
+    run: async () => {
+      const previousKey = process.env.AGENT_API_KEY;
+      const previousRoles = process.env.AGENT_ALLOWED_ROLES;
+      process.env.AGENT_API_KEY = "legacy-key";
+      process.env.AGENT_ALLOWED_ROLES = "realtor_admin";
+
+      try {
+        await withServer(async (baseUrl) => {
+          const agentRunUnauthorized = await fetch(`${baseUrl}/agent/run`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              lead: { message: "Need 2 BHK in Wakad", name: "Arjun" },
+              sendWhatsApp: false
+            })
+          });
+          assert.equal(agentRunUnauthorized.status, 401);
+
+          const agentRunAllowed = await fetch(`${baseUrl}/agent/run`, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-agent-api-key": "legacy-key",
+              "x-agent-role": "realtor_admin"
+            },
+            body: JSON.stringify({
+              lead: { message: "Need 2 BHK in Wakad", name: "Arjun" },
+              sendWhatsApp: false
+            })
+          });
+          assert.equal(agentRunAllowed.status, 200);
+
+          const wacliUnauthorized = await fetch(`${baseUrl}/wacli/doctor`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({})
+          });
+          assert.equal(wacliUnauthorized.status, 401);
+
+          const wacliAllowed = await fetch(`${baseUrl}/wacli/doctor`, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-agent-api-key": "legacy-key",
+              "x-agent-role": "realtor_admin"
+            },
+            body: JSON.stringify({})
+          });
+          assert.equal(wacliAllowed.status, 200);
+        });
+      } finally {
+        if (previousKey === undefined) {
+          delete process.env.AGENT_API_KEY;
+        } else {
+          process.env.AGENT_API_KEY = previousKey;
+        }
+
+        if (previousRoles === undefined) {
+          delete process.env.AGENT_ALLOWED_ROLES;
+        } else {
+          process.env.AGENT_ALLOWED_ROLES = previousRoles;
+        }
+      }
+    }
+  },
+  {
     name: "/agent/chat enforces configurable rate limit on POST execution routes",
     run: async () => {
       const previousMax = process.env.AGENT_RATE_LIMIT_MAX;
@@ -457,6 +891,52 @@ const tests: TestCase[] = [
           delete process.env.AGENT_RATE_LIMIT_WINDOW_MS;
         } else {
           process.env.AGENT_RATE_LIMIT_WINDOW_MS = previousWindow;
+        }
+      }
+    }
+  },
+  {
+    name: "server enforces request body size limit with 413 payload_too_large",
+    run: async () => {
+      const previousBodyLimit = process.env.AGENT_MAX_BODY_BYTES;
+      const previousApiKey = process.env.AGENT_API_KEY;
+      process.env.AGENT_MAX_BODY_BYTES = "1024";
+      delete process.env.AGENT_API_KEY;
+
+      try {
+        await withServer(async (baseUrl) => {
+          const oversizedMessage = "x".repeat(4_000);
+          const response = await fetch(`${baseUrl}/agent/chat`, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json"
+            },
+            body: JSON.stringify({
+              message: oversizedMessage,
+              dryRun: true
+            })
+          });
+          assert.equal(response.status, 413);
+          const payload = (await response.json()) as {
+            ok: boolean;
+            error: string;
+            maxBytes: number;
+          };
+          assert.equal(payload.ok, false);
+          assert.equal(payload.error, "payload_too_large");
+          assert.equal(payload.maxBytes, 1024);
+        });
+      } finally {
+        if (previousBodyLimit === undefined) {
+          delete process.env.AGENT_MAX_BODY_BYTES;
+        } else {
+          process.env.AGENT_MAX_BODY_BYTES = previousBodyLimit;
+        }
+
+        if (previousApiKey === undefined) {
+          delete process.env.AGENT_API_KEY;
+        } else {
+          process.env.AGENT_API_KEY = previousApiKey;
         }
       }
     }
@@ -672,7 +1152,7 @@ const tests: TestCase[] = [
     }
   },
   {
-    name: "/agent/session/:id/events streams initial snapshot and supports query auth fallback",
+    name: "/agent/session/:id/events uses token flow and rejects query credential params",
     run: async () => {
       const previousKey = process.env.AGENT_API_KEY;
       const previousRoles = process.env.AGENT_ALLOWED_ROLES;
@@ -699,8 +1179,40 @@ const tests: TestCase[] = [
           assert.equal(typeof sessionId, "string");
           assert.ok(sessionId.length > 0);
 
-          const stream = await fetch(
+          const legacyQuery = await fetch(
             `${baseUrl}/agent/session/${encodeURIComponent(sessionId)}/events?apiKey=stream-key&role=realtor_admin`,
+            {
+              method: "GET"
+            }
+          );
+          assert.equal(legacyQuery.status, 400);
+
+          const tokenResponse = await fetch(
+            `${baseUrl}/agent/session/${encodeURIComponent(sessionId)}/events/token`,
+            {
+              method: "POST",
+              headers: {
+                "content-type": "application/json",
+                "x-agent-api-key": "stream-key",
+                "x-agent-role": "realtor_admin"
+              },
+              body: JSON.stringify({})
+            }
+          );
+          assert.equal(tokenResponse.status, 200);
+          const tokenPayload = (await tokenResponse.json()) as {
+            ok: boolean;
+            result: {
+              token: string;
+              expiresAtIso: string;
+            };
+          };
+          assert.equal(tokenPayload.ok, true);
+          assert.equal(typeof tokenPayload.result.token, "string");
+          assert.ok(tokenPayload.result.token.length > 10);
+
+          const stream = await fetch(
+            `${baseUrl}/agent/session/${encodeURIComponent(sessionId)}/events?token=${encodeURIComponent(tokenPayload.result.token)}`,
             {
               method: "GET"
             }

@@ -24,12 +24,14 @@ This repo now includes a tool-planned chat endpoint (`POST /agent/chat`) that ca
 - `generate_performance_report` (snapshot from stored listing/visit activity)
 - `group_requirement_match_scan` (monitor broker-group requirement text and shortlist matching properties)
 - `ads_lead_qualification` (score ad leads hot/warm/cold and return next action)
+- built-in scheduled group posting workflow (intake queue + automatic dispatch windows)
 - `send_whatsapp_followup` now uses resale playbook assets (EN/HI templates + 1/3/7/14 nurture sequence hints)
 - Session approval APIs for stateful operator flow:
   - `POST /agent/session/start`
   - `POST /agent/session/:id/message`
   - `POST /agent/session/:id/approve`
   - `POST /agent/session/:id/reject`
+  - `POST /agent/session/:id/events/token` (issue short-lived event token)
   - `GET /agent/session/:id/events` (SSE live updates)
 
 ## New: Modular Skill Pack (`skills/`)
@@ -61,6 +63,7 @@ Notes:
 - Skills are separated by permission boundary (read-only analysis vs confirmed writes).
 - `lead-storage` requires supervisor confirmation token for writes.
 - Current evaluation mode is broker-group oriented (`dataset_mode=broker_group`) with explicit `record_type` handling.
+- Runtime wiring: `/agent/chat` and `/agent/session/:id/message` now return `skillsPipeline` output containing deterministic stage results for the full chain (storage stage remains confirmation-gated).
 
 ## Guardrails (enforced in `/agent/chat`)
 
@@ -75,6 +78,7 @@ Persistence notes:
   - `listings`
   - `visits`
   - `agent_actions`
+  - `group_post_queue` (scheduled group posting intake/dispatch queue)
 - Session state/approval queue persists to:
   - `agent_sessions`
 - Tables are auto-created on first write.
@@ -346,11 +350,17 @@ The Node server serves `web/dist` on `/app` and `/app/*` when build output exist
 - `POST /agent/session/:id/message`
 - `POST /agent/session/:id/approve`
 - `POST /agent/session/:id/reject`
+- `POST /agent/session/:id/events/token` (issue short-lived SSE token)
 - `GET /agent/session/:id/events` (SSE)
 - `POST /wacli/send`
 - `POST /wacli/search`
 - `POST /wacli/chats`
 - `POST /wacli/doctor`
+- `GET /group-posting/status`
+- `GET /group-posting/queue`
+- `POST /group-posting/intake`
+- `POST /group-posting/dispatch`
+- `POST /group-posting/:id/requeue`
 - `POST /whatsapp/pairing/approve`
 - `GET /whatsapp/webhook` (Meta verify challenge)
 - `POST /whatsapp/webhook` (Meta events + optional signature verification)
@@ -360,6 +370,8 @@ The Node server serves `web/dist` on `/app` and `/app/*` when build output exist
 ```bash
 curl -X POST http://localhost:8080/agent/run \
   -H "Content-Type: application/json" \
+  -H "x-agent-api-key: your-key" \
+  -H "x-agent-role: realtor_admin" \
   -d '{
     "lead": {
       "name": "Arjun",
@@ -440,8 +452,20 @@ If `PROPAI_QUEUE_ENABLED=true`, approve responses include a top-level `queue` ob
 
 Stream live session updates (Server-Sent Events):
 
+Issue token first:
+
 ```bash
-curl -N "http://localhost:8080/agent/session/<session-id>/events?apiKey=your-key&role=realtor_admin"
+curl -X POST http://localhost:8080/agent/session/<session-id>/events/token \
+  -H "Content-Type: application/json" \
+  -H "x-agent-api-key: your-key" \
+  -H "x-agent-role: realtor_admin" \
+  -d '{}'
+```
+
+Then connect with token:
+
+```bash
+curl -N "http://localhost:8080/agent/session/<session-id>/events?token=<event-token>"
 ```
 
 ### Example: OpenRouter CLI
@@ -470,11 +494,42 @@ curl -X POST http://localhost:8080/agent/chat \
   }'
 ```
 
+### Example: queue a listing for scheduled group posting
+
+```bash
+curl -X POST http://localhost:8080/group-posting/intake \
+  -H "Content-Type: application/json" \
+  -H "x-agent-api-key: your-key" \
+  -H "x-agent-role: realtor_admin" \
+  -d '{
+    "content": "New 3 BHK in Wakad, 1.25 Cr, immediate possession",
+    "targets": ["sales-team@g.us","buyers-desk@g.us"],
+    "scheduleMode": "daily",
+    "repeatCount": 3,
+    "source": "api",
+    "idempotencyKey": "broker-msg-12345"
+  }'
+```
+
+### Example: run due scheduled group posts now
+
+```bash
+curl -X POST http://localhost:8080/group-posting/dispatch \
+  -H "Content-Type: application/json" \
+  -H "x-agent-api-key: your-key" \
+  -H "x-agent-role: realtor_admin" \
+  -d '{
+    "dryRun": true
+  }'
+```
+
 ### Example: send WhatsApp via wacli
 
 ```bash
 curl -X POST http://localhost:8080/wacli/send \
   -H "Content-Type: application/json" \
+  -H "x-agent-api-key: your-key" \
+  -H "x-agent-role: realtor_admin" \
   -d '{"to":"+919999999999","message":"Hello from Realtor Agentic App"}'
 ```
 
@@ -509,10 +564,12 @@ curl -X POST http://localhost:8080/whatsapp/pairing/approve \
 - `PROPAI_LIVE_TIMEOUT_MS` (default `8000`, request timeout per attempt)
 - `PROPAI_LIVE_MAX_RETRIES` (default `2`, retries on 429/5xx and transient failures)
 - `PROPAI_LIVE_RETRY_BACKOFF_MS` (default `300`, linear backoff base)
-- `AGENT_API_KEY` (optional, when set `/agent/chat` requires `x-agent-api-key`)
+- `AGENT_API_KEY` (optional; when set it is enforced for `/agent/chat`, `/agent/run`, `/agent/session/*`, and `/wacli/*`. Required for admin actions such as `/group-posting/*` and `/whatsapp/pairing/approve`)
 - `AGENT_ALLOWED_ROLES` (optional CSV, default `realtor_admin,ops`; checks `x-agent-role` when provided)
 - `AGENT_RATE_LIMIT_WINDOW_MS` (default `60000`, rate-limit window for POST execution routes)
 - `AGENT_RATE_LIMIT_MAX` (default `180`, max POST execution requests per window per IP+route key)
+- `AGENT_MAX_BODY_BYTES` (default `1048576`, rejects larger request bodies with `413 payload_too_large`)
+- `SKILLS_PIPELINE_ENABLED` (default `true`, toggles deterministic skill-chain output in chat/session responses)
 - `PROPAI_QUEUE_ENABLED` (default `false`; when true, approve execution attempts BullMQ queue mode)
 - `PROPAI_QUEUE_NAME` (default `propai-session-execution`)
 - `PROPAI_QUEUE_ATTEMPTS` (default `3`)
@@ -520,6 +577,15 @@ curl -X POST http://localhost:8080/whatsapp/pairing/approve \
 - `PROPAI_QUEUE_CONCURRENCY` (default `2`)
 - `PROPAI_QUEUE_TIMEOUT_MS` (default `45000`)
 - `REDIS_URL` (required when queue mode is enabled)
+- `GROUP_POSTING_ENABLED` (default `false`; enables background scheduled group posting worker)
+- `GROUP_POSTING_INTERVAL_MS` (default `900000`; queue scan interval in milliseconds)
+- `GROUP_POSTING_BATCH_SIZE` (default `10`; max queued items processed per scan)
+- `GROUP_POSTING_PROCESSING_LEASE_MS` (default `600000`; stale `processing` rows older than this are auto-recovered to `queued`)
+- `GROUP_POSTING_DEFAULT_TARGETS` (optional CSV of default WhatsApp group IDs/chats for dispatch)
+- `GROUP_POSTING_SCHEDULER_DRY_RUN` (default follows `WACLI_DRY_RUN`; simulate dispatches without sending)
+- `GROUP_POSTING_INTAKE_ENABLED` (default `false`; enables WhatsApp group intake in single-agent helper mode)
+- `GROUP_POSTING_INPUT_CHATS` (optional CSV of allowed WhatsApp input group IDs; supports `*` for all groups)
+- `GROUP_POSTING_ACK_INPUT` (default `false`; sends intake acknowledgment to input group)
 - `WHATSAPP_WEBHOOK_VERIFY_TOKEN` (optional, enables `GET /whatsapp/webhook` challenge verification)
 - `WHATSAPP_APP_SECRET` (optional, verifies `X-Hub-Signature-256` on `POST /whatsapp/webhook`)
 - `CORS_ORIGIN` (default `*`)
