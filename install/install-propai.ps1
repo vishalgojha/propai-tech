@@ -57,18 +57,20 @@ function Try-UpdateSourceRepo([string]$RepoRoot) {
 
   Push-Location $RepoRoot
   try {
-    $status = (& git status --porcelain).Trim()
+    $statusOutput = & git status --porcelain
     if ($LASTEXITCODE -ne 0) {
       Write-WarnLine "Could not read git status. Continuing with current local source."
       return
     }
+    $status = if ($null -eq $statusOutput) { "" } else { (@($statusOutput) -join "`n").Trim() }
 
     if (-not [string]::IsNullOrWhiteSpace($status)) {
       Write-WarnLine "Local git changes detected. Skipping source auto-update pull."
       return
     }
 
-    $upstream = (& git rev-parse --abbrev-ref --symbolic-full-name "@{u}" 2>$null).Trim()
+    $upstreamOutput = & git rev-parse --abbrev-ref --symbolic-full-name "@{u}" 2>$null
+    $upstream = if ($null -eq $upstreamOutput) { "" } else { (@($upstreamOutput) -join "`n").Trim() }
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($upstream)) {
       Write-WarnLine "No upstream tracking branch configured. Skipping source auto-update pull."
       return
@@ -162,7 +164,8 @@ function Install-LocalShim([string]$RepoRoot) {
 function Resolve-ShimBinDir([string]$RepoRoot) {
   $candidates = New-Object System.Collections.Generic.List[string]
 
-  $prefix = (& npm config get prefix).Trim()
+  $prefixOutput = & npm config get prefix
+  $prefix = if ($null -eq $prefixOutput) { "" } else { (@($prefixOutput) -join "`n").Trim() }
   if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($prefix) -and $prefix -ne "undefined") {
     [void]$candidates.Add($prefix)
   }
@@ -291,7 +294,7 @@ try {
   }
   else {
     Write-WarnLine "TUI runtime packages are missing. Start with: propai classic"
-    Write-WarnLine "Install TUI packages later with: npm install vue @vue-termui/core"
+    Write-WarnLine "Install TUI packages later with: npm install vue vue-termui"
   }
 }
 catch {

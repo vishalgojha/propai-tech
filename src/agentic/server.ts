@@ -1,7 +1,8 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
-import { extname, relative as pathRelative, sep as pathSep, resolve } from "node:path";
+import { dirname, extname, relative as pathRelative, sep as pathSep, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { RealtorOrchestrator } from "./agents/orchestrator.js";
 import type { LeadInput } from "./types.js";
 import { INDIAN_PROPERTIES } from "./data/indian-properties.js";
@@ -22,8 +23,11 @@ const orchestrator = new RealtorOrchestrator();
 const suiteEngine = new RealtorSuiteAgentEngine();
 const pairingStore = getPairingStore();
 const suiteSessionManager = getSuiteSessionManager();
-const REACT_APP_DIST_DIR = resolve(process.cwd(), "web", "dist");
-const REACT_APP_INDEX_FILE = resolve(REACT_APP_DIST_DIR, "index.html");
+const CURRENT_FILE_DIR = dirname(fileURLToPath(import.meta.url));
+const PROJECT_ROOT_FROM_MODULE = resolve(CURRENT_FILE_DIR, "..", "..");
+const REACT_APP_DIST_CANDIDATES = Array.from(
+  new Set([resolve(process.cwd(), "web", "dist"), resolve(PROJECT_ROOT_FROM_MODULE, "web", "dist")])
+);
 const SESSION_EVENT_TOKEN_TTL_MS = 10 * 60 * 1000;
 const sessionEventTokens = new Map<string, {
   sessionId: string;
@@ -87,6 +91,7 @@ export function startAgenticServer(port = Number(process.env.PORT || 8080)) {
   server.listen(port, () => {
     // eslint-disable-next-line no-console
     console.log(`PropAI Tech Agentic App running on http://localhost:${port}`);
+    void logFrontendMode();
   });
 
   return server;
@@ -244,6 +249,18 @@ async function route(
     }
 
     const status = await groupPostingService.getStatus();
+    sendJson(res, 200, { ok: true, result: status });
+    return;
+  }
+
+  if (method === "GET" && path === "/ops/queue/status") {
+    const auth = authorizeAgentChat(req, runtimeConfig);
+    if (!auth.ok) {
+      sendJson(res, auth.status, { ok: false, error: auth.error });
+      return;
+    }
+
+    const status = executionQueue.getRuntimeStatus();
     sendJson(res, 200, { ok: true, result: status });
     return;
   }
@@ -807,9 +824,11 @@ function sendText(res: ServerResponse, status: number, text: string) {
 }
 
 async function tryServeReactApp(path: string, res: ServerResponse): Promise<boolean> {
-  if (!(await isFile(REACT_APP_INDEX_FILE))) {
+  const reactAppLocation = await resolveReactAppLocation();
+  if (!reactAppLocation) {
     return false;
   }
+  const { distDir, indexFile } = reactAppLocation;
 
   const relativePath = normalizeReactAssetPath(path);
   if (relativePath === null) {
@@ -817,8 +836,8 @@ async function tryServeReactApp(path: string, res: ServerResponse): Promise<bool
   }
 
   const shouldServeIndex = relativePath === "index.html";
-  const candidate = resolve(REACT_APP_DIST_DIR, relativePath || "index.html");
-  if (!isWithinDirectory(REACT_APP_DIST_DIR, candidate)) {
+  const candidate = resolve(distDir, relativePath || "index.html");
+  if (!isWithinDirectory(distDir, candidate)) {
     return false;
   }
 
@@ -832,8 +851,32 @@ async function tryServeReactApp(path: string, res: ServerResponse): Promise<bool
     return true;
   }
 
-  await sendFile(res, REACT_APP_INDEX_FILE);
+  await sendFile(res, indexFile);
   return true;
+}
+
+async function resolveReactAppLocation(): Promise<{
+  distDir: string;
+  indexFile: string;
+} | null> {
+  for (const distDir of REACT_APP_DIST_CANDIDATES) {
+    const indexFile = resolve(distDir, "index.html");
+    if (await isFile(indexFile)) {
+      return { distDir, indexFile };
+    }
+  }
+  return null;
+}
+
+async function logFrontendMode(): Promise<void> {
+  const reactAppLocation = await resolveReactAppLocation();
+  if (reactAppLocation) {
+    // eslint-disable-next-line no-console
+    console.log(`[ui] Serving React app from ${reactAppLocation.distDir}`);
+    return;
+  }
+  // eslint-disable-next-line no-console
+  console.warn("[ui] web/dist not found. Serving embedded fallback UI (/app.js and /app.css).");
 }
 
 function normalizeReactAssetPath(path: string): string | null {

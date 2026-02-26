@@ -19,6 +19,18 @@ export type QueueExecutionMeta = {
   reason?: string;
 };
 
+export type QueueRuntimeStatus = {
+  enabled: boolean;
+  ready: boolean;
+  redisConfigured: boolean;
+  queueName: string;
+  attempts: number;
+  backoffMs: number;
+  concurrency: number;
+  timeoutMs: number;
+  reason?: string;
+};
+
 export class SuiteExecutionQueue {
   private readonly sessionManager: RealtorSuiteSessionManager;
   private readonly enabled: boolean;
@@ -35,6 +47,7 @@ export class SuiteExecutionQueue {
   private worker: any = null;
   private queueEvents: any = null;
   private warned = false;
+  private unavailableReason: string | undefined = "queue_not_ready";
 
   constructor(sessionManager: RealtorSuiteSessionManager) {
     this.sessionManager = sessionManager;
@@ -93,9 +106,29 @@ export class SuiteExecutionQueue {
     };
   }
 
+  getRuntimeStatus(): QueueRuntimeStatus {
+    return {
+      enabled: this.enabled,
+      ready: this.ready,
+      redisConfigured: this.redisUrl.length > 0,
+      queueName: this.queueName,
+      attempts: this.attempts,
+      backoffMs: this.backoffMs,
+      concurrency: this.concurrency,
+      timeoutMs: this.timeoutMs,
+      reason: this.ready ? undefined : this.unavailableReason || (this.enabled ? "queue_not_ready" : "queue_disabled")
+    };
+  }
+
   private async ensureReady(): Promise<boolean> {
-    if (!this.enabled) return false;
-    if (this.ready) return true;
+    if (!this.enabled) {
+      this.unavailableReason = "queue_disabled";
+      return false;
+    }
+    if (this.ready) {
+      this.unavailableReason = undefined;
+      return true;
+    }
     if (this.startPromise) return this.startPromise;
     this.startPromise = this.start();
     const ok = await this.startPromise;
@@ -106,12 +139,14 @@ export class SuiteExecutionQueue {
   private async start(): Promise<boolean> {
     if (!this.enabled) return false;
     if (!this.redisUrl) {
+      this.unavailableReason = "missing_redis_url";
       this.warnOnce("PROPAI_QUEUE_ENABLED=true but REDIS_URL is missing; falling back to direct execution.");
       return false;
     }
 
     const connection = parseRedisConnection(this.redisUrl);
     if (!connection) {
+      this.unavailableReason = "invalid_redis_url";
       this.warnOnce("Invalid REDIS_URL for PROPAI queue; falling back to direct execution.");
       return false;
     }
@@ -123,6 +158,7 @@ export class SuiteExecutionQueue {
       const Worker = bullmq.Worker;
       const QueueEvents = bullmq.QueueEvents;
       if (!Queue || !Worker || !QueueEvents) {
+        this.unavailableReason = "bullmq_incomplete";
         this.warnOnce("BullMQ module is incomplete; falling back to direct execution.");
         return false;
       }
@@ -161,12 +197,15 @@ export class SuiteExecutionQueue {
       process.once("beforeExit", shutdown);
 
       this.ready = true;
+      this.unavailableReason = undefined;
       return true;
     } catch (error) {
       const message = String((error as Error)?.message || error || "");
       if (/Cannot find module/i.test(message) && message.includes("bullmq")) {
+        this.unavailableReason = "bullmq_not_installed";
         this.warnOnce("BullMQ is not installed; falling back to direct execution.");
       } else {
+        this.unavailableReason = "queue_init_failed";
         this.warnOnce(`Queue init failed; falling back to direct execution. reason=${message}`);
       }
       return false;

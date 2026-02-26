@@ -276,6 +276,7 @@ Dry run:
 - Data governance policy: `docs/data-governance.md`
 - Frontend migration criteria: `docs/frontend-migration-plan.md`
 - Queue setup runbook: `docs/queue-setup.md`
+- UX contract: `docs/ux-contract.md`
 
 ## React Web Shell (Optional)
 
@@ -361,6 +362,7 @@ The Node server serves `web/dist` on `/app` and `/app/*` when build output exist
 - `POST /group-posting/intake`
 - `POST /group-posting/dispatch`
 - `POST /group-posting/:id/requeue`
+- `GET /ops/queue/status`
 - `POST /whatsapp/pairing/approve`
 - `GET /whatsapp/webhook` (Meta verify challenge)
 - `POST /whatsapp/webhook` (Meta events + optional signature verification)
@@ -449,6 +451,9 @@ curl -X POST http://localhost:8080/agent/session/<session-id>/approve \
 If `PROPAI_QUEUE_ENABLED=true`, approve responses include a top-level `queue` object:
 - `enabled: true` with `jobId` when BullMQ+Redis is active
 - `enabled: false` with fallback reason when queue infra is unavailable
+
+Queue runtime observability endpoint:
+- `GET /ops/queue/status` returns configured queue mode, readiness, retry settings, and fallback reason.
 
 Stream live session updates (Server-Sent Events):
 

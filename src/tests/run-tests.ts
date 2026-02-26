@@ -1152,6 +1152,53 @@ const tests: TestCase[] = [
     }
   },
   {
+    name: "/ops/queue/status returns queue runtime readiness and fallback reason",
+    run: async () => {
+      const prevQueueEnabled = process.env.PROPAI_QUEUE_ENABLED;
+      const prevRedisUrl = process.env.REDIS_URL;
+      delete process.env.AGENT_API_KEY;
+      process.env.PROPAI_QUEUE_ENABLED = "true";
+      delete process.env.REDIS_URL;
+
+      try {
+        await withServer(async (baseUrl) => {
+          const status = await fetch(`${baseUrl}/ops/queue/status`, {
+            method: "GET"
+          });
+          assert.equal(status.status, 200);
+          const payload = (await status.json()) as {
+            ok: boolean;
+            result: {
+              enabled: boolean;
+              ready: boolean;
+              redisConfigured: boolean;
+              queueName: string;
+              reason?: string;
+            };
+          };
+          assert.equal(payload.ok, true);
+          assert.equal(payload.result.enabled, true);
+          assert.equal(payload.result.ready, false);
+          assert.equal(payload.result.redisConfigured, false);
+          assert.equal(typeof payload.result.queueName, "string");
+          assert.match(String(payload.result.reason || ""), /redis|missing|fallback|not_ready|queue_disabled/i);
+        });
+      } finally {
+        if (prevQueueEnabled === undefined) {
+          delete process.env.PROPAI_QUEUE_ENABLED;
+        } else {
+          process.env.PROPAI_QUEUE_ENABLED = prevQueueEnabled;
+        }
+
+        if (prevRedisUrl === undefined) {
+          delete process.env.REDIS_URL;
+        } else {
+          process.env.REDIS_URL = prevRedisUrl;
+        }
+      }
+    }
+  },
+  {
     name: "/agent/session/:id/events uses token flow and rejects query credential params",
     run: async () => {
       const previousKey = process.env.AGENT_API_KEY;
