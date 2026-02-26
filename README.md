@@ -33,6 +33,9 @@ This repo now includes a tool-planned chat endpoint (`POST /agent/chat`) that ca
   - `POST /agent/session/:id/reject`
   - `POST /agent/session/:id/events/token` (issue short-lived event token)
   - `GET /agent/session/:id/events` (SSE live updates)
+  - `GET /guided/state?sessionId=<session-id>`
+  - `POST /guided/start`
+  - `POST /guided/answer`
 
 ## New: Modular Skill Pack (`skills/`)
 
@@ -195,7 +198,9 @@ TUI capabilities:
   - `0` suggest-only
   - `1` execution with approvals for local writes, external actions blocked
   - `2` execution with approvals for local and external actions
-- Approval queue commands: `/approve` and `/deny`.
+- Guided workflow commands: `/guided start publish_listing`, `/guided state`, `/guided answer <value>`.
+- Operator mode command: `/mode <guided|expert>`.
+- Approval queue commands (new TUI runtime): `/pending`, `/approve`, `/deny`, `/a`, `/d`.
 - Session controls: `/help`, `/state`, `/llm`, `/set ...`, `/clear`, `/back`.
 - Direct send shortcut (autonomy 2): `msg +919820056180 your message`.
 
@@ -205,6 +210,7 @@ Notes:
 - `WACLI_DRY_RUN=true` remains safest for testing.
 - LLM provider order is: OpenRouter (if configured) -> xAI (if configured) -> Ollama local.
 - Fallback chat templates are disabled. If no provider is available, terminal returns an explicit LLM-unavailable error.
+- If optional TUI deps are missing and it falls back to classic terminal, approvals are handled by inline prompts instead of `/pending`/`/approve` commands.
 
 ## PropAI CLI Commands
 
@@ -348,6 +354,9 @@ The Node server serves `web/dist` on `/app` and `/app/*` when build output exist
 - `POST /agent/run`
 - `POST /agent/chat`
 - `GET /agent/sessions`
+- `GET /guided/state?sessionId=<session-id>`
+- `POST /guided/start`
+- `POST /guided/answer`
 - `POST /agent/session/start`
 - `GET /agent/session/:id`
 - `POST /agent/session/:id/message`
@@ -474,6 +483,55 @@ Then connect with token:
 ```bash
 curl -N "http://localhost:8080/agent/session/<session-id>/events?token=<event-token>"
 ```
+
+### Example: guided publish-listing flow
+
+Start or resume a session:
+
+```bash
+curl -X POST http://localhost:8080/agent/session/start \
+  -H "Content-Type: application/json" \
+  -H "x-agent-api-key: your-key" \
+  -H "x-agent-role: realtor_admin" \
+  -d '{}'
+```
+
+Start guided flow (`flowId` currently supports `publish_listing`):
+
+```bash
+curl -X POST http://localhost:8080/guided/start \
+  -H "Content-Type: application/json" \
+  -H "x-agent-api-key: your-key" \
+  -H "x-agent-role: realtor_admin" \
+  -d '{
+    "sessionId": "<session-id>",
+    "flowId": "publish_listing"
+  }'
+```
+
+Check current guided step:
+
+```bash
+curl "http://localhost:8080/guided/state?sessionId=<session-id>" \
+  -H "x-agent-api-key: your-key" \
+  -H "x-agent-role: realtor_admin"
+```
+
+Answer a guided step (`stepId` must match `guidedFlow.currentStepId`):
+
+```bash
+curl -X POST http://localhost:8080/guided/answer \
+  -H "Content-Type: application/json" \
+  -H "x-agent-api-key: your-key" \
+  -H "x-agent-role: realtor_admin" \
+  -d '{
+    "sessionId": "<session-id>",
+    "stepId": "title",
+    "answer": "3BHK Sea Facing in Bandra West"
+  }'
+```
+
+When the flow reaches `status=completed`, use `guidedFlow.completion.suggestedExecution` to execute the generated request in the same session.
 
 ### Example: OpenRouter CLI
 
