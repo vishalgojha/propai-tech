@@ -2,6 +2,7 @@ import "dotenv/config";
 import { OpenClawGatewayClient } from "../openclaw/gateway-client.js";
 import { getOllamaStatus } from "../llm/ollama.js";
 import { isOpenRouterEnabled } from "../llm/openrouter.js";
+import { isXaiEnabled } from "../llm/xai.js";
 import { createRequire } from "node:module";
 import { getConnectorHealthSnapshot } from "../agentic/connectors/health.js";
 import type { ConnectorHealthStatus } from "../agentic/connectors/types.js";
@@ -96,6 +97,7 @@ async function runDoctor(flags: ParsedFlags): Promise<void> {
     getOllamaStatus()
   ]);
   const openrouterEnabled = isOpenRouterEnabled();
+  const xaiEnabled = isXaiEnabled();
 
   const report = {
     nowIso: new Date().toISOString(),
@@ -109,6 +111,7 @@ async function runDoctor(flags: ParsedFlags): Promise<void> {
       propai: propaiHealth,
       llm: {
         openrouterEnabled,
+        xaiEnabled,
         ollama
       }
     },
@@ -117,6 +120,7 @@ async function runDoctor(flags: ParsedFlags): Promise<void> {
       openclawWsOk: openclaw.gateway.websocket.ok,
       propaiOk: propaiHealth.ok,
       openrouterEnabled,
+      xaiEnabled,
       ollamaEnabled: ollama.enabled && ollama.reachable
     })
   };
@@ -149,6 +153,10 @@ async function runDoctor(flags: ParsedFlags): Promise<void> {
   printCheck("OpenRouter", openrouterEnabled, {
     endpoint: "env: OPENROUTER_API_KEY",
     detail: openrouterEnabled ? "configured" : "not configured"
+  });
+  printCheck("xAI", xaiEnabled, {
+    endpoint: "env: XAI_API_KEY",
+    detail: xaiEnabled ? "configured" : "not configured"
   });
   printCheck("Ollama", ollama.enabled && ollama.reachable, {
     endpoint: ollama.baseUrl,
@@ -290,6 +298,7 @@ function buildSuggestions(input: {
   openclawWsOk: boolean;
   propaiOk: boolean;
   openrouterEnabled: boolean;
+  xaiEnabled: boolean;
   ollamaEnabled: boolean;
 }): string[] {
   const suggestions: string[] = [];
@@ -305,8 +314,8 @@ function buildSuggestions(input: {
       "PropAI API check failed. Start server only if you need web/API mode (`npm run dev` -> http://localhost:8080/app). CLI chat can run without this."
     );
   }
-  if (!input.openrouterEnabled && !input.ollamaEnabled) {
-    suggestions.push("Configure at least one LLM provider (OpenRouter API key or local Ollama).");
+  if (!input.openrouterEnabled && !input.xaiEnabled && !input.ollamaEnabled) {
+    suggestions.push("Configure at least one LLM provider (OpenRouter API key, xAI API key, or local Ollama).");
   }
 
   if (suggestions.length === 0) {

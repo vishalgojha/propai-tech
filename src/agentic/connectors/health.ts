@@ -3,6 +3,7 @@ import { WacliTool } from "../tools/wacli-tool.js";
 import { OpenClawGatewayClient, type OpenClawGatewayClientOptions } from "../../openclaw/gateway-client.js";
 import { getOllamaStatus } from "../../llm/ollama.js";
 import { isOpenRouterEnabled } from "../../llm/openrouter.js";
+import { isXaiEnabled } from "../../llm/xai.js";
 import {
   buildConnectorCredentialPairs,
   buildCredentials,
@@ -30,6 +31,7 @@ export async function getConnectorHealthSnapshot(
 
   const [
     openrouterItem,
+    xaiItem,
     ollamaItem,
     wacliItem,
     wppconnectItem,
@@ -38,6 +40,7 @@ export async function getConnectorHealthSnapshot(
     openclawItem
   ] = await Promise.all([
     checkOpenRouter(pairByConnector.get("openrouter")),
+    checkXai(pairByConnector.get("xai")),
     checkOllama(pairByConnector.get("ollama")),
     checkWacli(pairByConnector.get("wacli")),
     checkWppConnect(pairByConnector.get("wppconnect_legacy")),
@@ -48,6 +51,7 @@ export async function getConnectorHealthSnapshot(
 
   const statusByConnectorId = new Map<string, Omit<ConnectorHealthItem, "connector">>([
     ["openrouter", openrouterItem],
+    ["xai", xaiItem],
     ["ollama", ollamaItem],
     ["wacli", wacliItem],
     ["wppconnect_legacy", wppconnectItem],
@@ -98,6 +102,25 @@ async function checkOpenRouter(
 
   return {
     pair: pair || unknownPair("openrouter"),
+    status: enabled ? "healthy" : "unconfigured",
+    checks
+  };
+}
+
+async function checkXai(
+  pair: ConnectorCredentialPair | undefined
+): Promise<Omit<ConnectorHealthItem, "connector">> {
+  const enabled = isXaiEnabled();
+  const checks: ConnectorCheck[] = [
+    {
+      name: "api_key",
+      ok: enabled,
+      detail: enabled ? "XAI_API_KEY configured." : "XAI_API_KEY missing."
+    }
+  ];
+
+  return {
+    pair: pair || unknownPair("xai"),
     status: enabled ? "healthy" : "unconfigured",
     checks
   };

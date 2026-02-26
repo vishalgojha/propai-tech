@@ -203,7 +203,7 @@ Notes:
 
 - Uses `.env` values (including `WACLI_DRY_RUN`, `WACLI_BIN`).
 - `WACLI_DRY_RUN=true` remains safest for testing.
-- LLM provider order is: OpenRouter (if configured) -> Ollama local.
+- LLM provider order is: OpenRouter (if configured) -> xAI (if configured) -> Ollama local.
 - Fallback chat templates are disabled. If no provider is available, terminal returns an explicit LLM-unavailable error.
 
 ## PropAI CLI Commands
@@ -213,7 +213,7 @@ Notes:
 - `propai doctor`:
   - Probes OpenClaw gateway over HTTP + WebSocket via `OpenClawGatewayClient`.
   - Probes local PropAI API `/health`.
-  - Reports OpenRouter/Ollama availability.
+  - Reports OpenRouter/xAI/Ollama availability.
 - `propai connectors`:
   - Returns connector inventory health (connectors, credentials, connector-credential pairs).
   - Supports `--json` for automation.
@@ -312,6 +312,8 @@ The Node server serves `web/dist` on `/app` and `/app/*` when build output exist
 | `PORT` | Yes | `8080` |
 | `OPENROUTER_API_KEY` | Yes | `sk-or-...` |
 | `OPENROUTER_MODEL` | Yes | `openai/gpt-4o-mini` |
+| `XAI_API_KEY` | Optional | `xai-...` |
+| `XAI_MODEL` | Optional | `grok-2-latest` |
 | `AGENT_API_KEY` | Recommended | `your-strong-key` |
 | `AGENT_ALLOWED_ROLES` | Recommended | `realtor_admin,ops` |
 | `CORS_ORIGIN` | Yes (prod) | `https://propai.live` |
@@ -599,6 +601,10 @@ curl -X POST http://localhost:8080/whatsapp/pairing/approve \
 - `OPENROUTER_BASE_URL` (default `https://openrouter.ai/api/v1`)
 - `OPENROUTER_TIMEOUT_MS` (default `30000`)
 - `OPENROUTER_APP_NAME` / `OPENROUTER_APP_URL` (metadata headers for OpenRouter)
+- `XAI_API_KEY` (optional; enables xAI as cloud LLM provider fallback)
+- `XAI_MODEL` (default `grok-2-latest`)
+- `XAI_BASE_URL` (default `https://api.x.ai/v1`)
+- `XAI_TIMEOUT_MS` (default `30000`)
 - `OLLAMA_ENABLED` (default `auto`; set `true` to force local Ollama attempts, `false` to disable)
 - `OLLAMA_BASE_URL` (default `http://127.0.0.1:11434`)
 - `OLLAMA_MODEL` (default `llama3.1:8b`)

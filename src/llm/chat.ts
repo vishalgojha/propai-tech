@@ -1,5 +1,6 @@
 import { generateOllamaText, isOllamaEnabled } from "./ollama.js";
 import { generateOpenRouterText, isOpenRouterEnabled } from "./openrouter.js";
+import { generateXaiText, isXaiEnabled } from "./xai.js";
 
 export type ChatMessage = {
   role: "system" | "user" | "assistant";
@@ -12,7 +13,7 @@ export type ChatOptions = {
   maxTokens?: number;
 };
 
-export type ChatProvider = "openrouter" | "ollama" | "none";
+export type ChatProvider = "openrouter" | "xai" | "ollama" | "none";
 
 export async function generateAssistantText(
   messages: ChatMessage[],
@@ -26,6 +27,17 @@ export async function generateAssistantText(
       }
     } catch {
       // Fall through to local provider.
+    }
+  }
+
+  if (isXaiEnabled()) {
+    try {
+      const text = await generateXaiText(messages, options);
+      if (text) {
+        return { text, provider: "xai" };
+      }
+    } catch {
+      // Fall through to next provider.
     }
   }
 

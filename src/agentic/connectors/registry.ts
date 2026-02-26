@@ -11,6 +11,14 @@ const CONNECTORS: Connector[] = [
     description: "Remote LLM provider for assistant responses."
   },
   {
+    id: "xai",
+    name: "xAI",
+    provider: "x.ai",
+    domain: "llm",
+    capabilities: ["llm_inference"],
+    description: "Direct xAI model provider for Grok responses."
+  },
+  {
     id: "ollama",
     name: "Ollama",
     provider: "local",
@@ -65,6 +73,11 @@ const CREDENTIAL_DEFS: Array<Pick<Credential, "id" | "name" | "envVar">> = [
     id: "openrouter_api_key",
     name: "OpenRouter API Key",
     envVar: "OPENROUTER_API_KEY"
+  },
+  {
+    id: "xai_api_key",
+    name: "xAI API Key",
+    envVar: "XAI_API_KEY"
   },
   {
     id: "database_url",
@@ -132,6 +145,13 @@ export function buildConnectorCredentialPairs(
       credentialIds: ["openrouter_api_key"],
       status: has("openrouter_api_key") ? "connected" : "missing_credentials",
       note: has("openrouter_api_key") ? "API key available." : "Set OPENROUTER_API_KEY."
+    },
+    {
+      id: "pair-xai",
+      connectorId: "xai",
+      credentialIds: ["xai_api_key"],
+      status: has("xai_api_key") ? "connected" : "missing_credentials",
+      note: has("xai_api_key") ? "API key available." : "Set XAI_API_KEY."
     },
     {
       id: "pair-ollama",
