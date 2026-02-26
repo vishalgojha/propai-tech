@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { 
   LayoutDashboard, PenTool, CheckCircle, Activity, MessageCircle, 
   UserCheck, Bot, Send, List, Play, Settings, HeartPulse, Database, 
@@ -53,8 +53,128 @@ interface QueueItem {
   scheduled: string;
 }
 
+interface SettingsForm {
+  businessPricePrefix: string;
+  openrouterApiKey: string;
+  openrouterModel: string;
+  xaiApiKey: string;
+  xaiModel: string;
+}
+
+type SafetyMode = 'preview' | 'guided_live' | 'autopilot';
+type OperatorLanguage = 'en' | 'hi' | 'hinglish';
+
+interface OperatorProfile {
+  name: string;
+  phone: string;
+  city: string;
+  lang: OperatorLanguage;
+}
+
+interface OnboardingState {
+  step: 1 | 2 | 3;
+  completed: boolean;
+  skipped: boolean;
+}
+
+const STORAGE_KEYS = {
+  settings: 'propai.ui.settings.v1',
+  operator: 'propai.ui.operator.v1',
+  onboarding: 'propai.ui.onboarding.v1',
+  safetyMode: 'propai.ui.safety_mode.v1',
+} as const;
+
+const DEFAULT_SETTINGS_FORM: SettingsForm = {
+  businessPricePrefix: 'Cr',
+  openrouterApiKey: '',
+  openrouterModel: 'openai/gpt-4o-mini',
+  xaiApiKey: '',
+  xaiModel: 'grok-2-latest'
+};
+
+const DEFAULT_OPERATOR_PROFILE: OperatorProfile = {
+  name: '',
+  phone: '',
+  city: '',
+  lang: 'en'
+};
+
+const DEFAULT_ONBOARDING_STATE: OnboardingState = {
+  step: 1,
+  completed: false,
+  skipped: false
+};
+
+const SAFETY_MODE_META: Record<SafetyMode, {
+  label: string;
+  subtitle: string;
+  dryRun: boolean;
+  autonomy: 0 | 1 | 2;
+}> = {
+  preview: {
+    label: 'Preview Only',
+    subtitle: 'No real sends. Best for practice.',
+    dryRun: true,
+    autonomy: 0
+  },
+  guided_live: {
+    label: 'Guided Live',
+    subtitle: 'Real actions with approvals in control.',
+    dryRun: false,
+    autonomy: 1
+  },
+  autopilot: {
+    label: 'Autopilot',
+    subtitle: 'Fewer pauses for power operators.',
+    dryRun: false,
+    autonomy: 2
+  }
+};
+
+const SAFETY_MODE_ORDER: SafetyMode[] = ['preview', 'guided_live', 'autopilot'];
+
+const CONNECTOR_HELP_TEXT: Record<string, string> = {
+  openrouter: 'Cloud AI provider',
+  xai: 'Cloud AI provider',
+  ollama: 'Local AI provider',
+  wacli: 'WhatsApp messaging transport',
+  wppconnect: 'Legacy WhatsApp bridge',
+  propai: 'Property portal publishing bridge',
+  postgres: 'Database storage',
+  openclaw: 'Gateway connectivity'
+};
+
+const QUEUE_STATUS_LABEL: Record<QueueItem['status'], string> = {
+  queued: 'Waiting',
+  processing: 'Sending',
+  sent: 'Completed',
+  failed: 'Needs retry'
+};
+
+const CONNECTOR_STATUS_LABEL: Record<Connector['status'], string> = {
+  healthy: 'Ready',
+  warning: 'Needs attention',
+  error: 'Issue'
+};
+
+const OPENROUTER_MODELS = [
+  'openai/gpt-4o-mini',
+  'openai/gpt-4.1-mini',
+  'anthropic/claude-3.5-sonnet',
+  'anthropic/claude-3.7-sonnet',
+  'google/gemini-2.0-flash',
+  'meta-llama/llama-3.3-70b-instruct'
+] as const;
+
+const XAI_MODELS = [
+  'grok-2-latest',
+  'grok-2-vision-latest',
+  'grok-beta'
+] as const;
+
 export const App: React.FC = () => {
   const [activeScreen, setActiveScreen] = useState<Screen>('dashboard');
+  const [hydrated, setHydrated] = useState(false);
   const [publishResults, setPublishResults] = useState<PublishResult[]>([
     { id: 'PR-7842', date: 'Feb 24, 14:32', listingTitle: '3BHK Bandra West', portal: '99acres', externalId: '99A-938472', status: 'success' },
     { id: 'PR-7841', date: 'Feb 24, 13:19', listingTitle: '2BHK Andheri', portal: 'MagicBricks', externalId: 'MB-837462', status: 'success' },
@@ -63,6 +183,7 @@ export const App: React.FC = () => {
 
   const [connectors, setConnectors] = useState<Connector[]>([
     { id: 'openrouter', name: 'OpenRouter', status: 'healthy', lastPing: '12s ago' },
+    { id: 'xai', name: 'xAI', status: 'healthy', lastPing: '18s ago' },
     { id: 'ollama', name: 'Ollama', status: 'healthy', lastPing: '41s ago' },
     { id: 'wacli', name: 'WACLI', status: 'healthy', lastPing: 'just now' },
     { id: 'wppconnect', name: 'WPPConnect Legacy', status: 'warning', lastPing: '3m ago' },
@@ -82,6 +203,12 @@ export const App: React.FC = () => {
     { id: 'GQ-3920', kind: 'property', priority: 'medium', content: '2BHK Andheri East', targets: 'Group-Thane', status: 'processing', scheduled: '15:00' },
   ]);
 
+  const [settingsForm, setSettingsForm] = useState({ ...DEFAULT_SETTINGS_FORM });
+  const [operatorProfile, setOperatorProfile] = useState<OperatorProfile>({ ...DEFAULT_OPERATOR_PROFILE });
+  const [safetyMode, setSafetyMode] = useState<SafetyMode>('guided_live');
+  const [onboarding, setOnboarding] = useState<OnboardingState>({ ...DEFAULT_ONBOARDING_STATE });
+  const [settingsSavedAt, setSettingsSavedAt] = useState<string>('');
+
   const [formData, setFormData] = useState({
     title: '3BHK Sea Facing in Bandra West',
     description: 'Spacious 3 bedroom apartment with sea view, 1450 sq ft, 2 parking, 24x7 security.',
@@ -100,24 +227,106 @@ export const App: React.FC = () => {
     { role: 'system', text: 'post_to_magicbricks tool called → MB-837462' },
   ]);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    try {
+      const rawSettings = window.localStorage.getItem(STORAGE_KEYS.settings);
+      if (rawSettings) {
+        const parsed = JSON.parse(rawSettings) as Partial<typeof DEFAULT_SETTINGS_FORM>;
+        setSettingsForm((prev) => ({
+          ...prev,
+          ...parsed,
+        }));
+      }
+    } catch {
+      // ignore malformed local settings
+    }
+
+    try {
+      const rawOperator = window.localStorage.getItem(STORAGE_KEYS.operator);
+      if (rawOperator) {
+        const parsed = JSON.parse(rawOperator) as Partial<OperatorProfile>;
+        setOperatorProfile((prev) => ({
+          ...prev,
+          ...parsed,
+          lang: parsed.lang === 'hi' || parsed.lang === 'hinglish' ? parsed.lang : prev.lang
+        }));
+      }
+    } catch {
+      // ignore malformed local operator profile
+    }
+
+    try {
+      const rawSafetyMode = window.localStorage.getItem(STORAGE_KEYS.safetyMode);
+      if (rawSafetyMode === 'preview' || rawSafetyMode === 'guided_live' || rawSafetyMode === 'autopilot') {
+        setSafetyMode(rawSafetyMode);
+      }
+    } catch {
+      // ignore malformed local safety mode
+    }
+
+    try {
+      const rawOnboarding = window.localStorage.getItem(STORAGE_KEYS.onboarding);
+      if (rawOnboarding) {
+        const parsed = JSON.parse(rawOnboarding) as Partial<OnboardingState>;
+        const normalizedStep = parsed.step === 2 || parsed.step === 3 ? parsed.step : 1;
+        setOnboarding({
+          step: normalizedStep,
+          completed: Boolean(parsed.completed),
+          skipped: Boolean(parsed.skipped)
+        });
+      }
+    } catch {
+      // ignore malformed local onboarding state
+    }
+
+    setHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated || typeof window === 'undefined') return;
+    window.localStorage.setItem(STORAGE_KEYS.settings, JSON.stringify(settingsForm));
+  }, [settingsForm, hydrated]);
+
+  useEffect(() => {
+    if (!hydrated || typeof window === 'undefined') return;
+    window.localStorage.setItem(STORAGE_KEYS.operator, JSON.stringify(operatorProfile));
+  }, [operatorProfile, hydrated]);
+
+  useEffect(() => {
+    if (!hydrated || typeof window === 'undefined') return;
+    window.localStorage.setItem(STORAGE_KEYS.safetyMode, safetyMode);
+  }, [safetyMode, hydrated]);
+
+  useEffect(() => {
+    if (!hydrated || typeof window === 'undefined') return;
+    window.localStorage.setItem(STORAGE_KEYS.onboarding, JSON.stringify(onboarding));
+  }, [onboarding, hydrated]);
+
+  useEffect(() => {
+    const targetDryRun = SAFETY_MODE_META[safetyMode].dryRun;
+    setFormData((prev) => (prev.dryRun === targetDryRun ? prev : { ...prev, dryRun: targetDryRun }));
+  }, [safetyMode]);
+
   const navItems = [
     { id: 'dashboard' as const, label: 'Dashboard', icon: LayoutDashboard },
     { id: 'publish-studio' as const, label: 'Listing Publish Studio', icon: PenTool },
     { id: 'publish-results' as const, label: 'Publish Results', icon: CheckCircle },
-    { id: 'portal-status' as const, label: 'Portal Adapter Status', icon: Activity },
+    { id: 'portal-status' as const, label: 'Publishing Connections', icon: Activity },
     { id: 'whatsapp-connect' as const, label: 'WhatsApp Connect', icon: MessageCircle },
     { id: 'pairing-approval' as const, label: 'Pairing Approval', icon: UserCheck },
     { id: 'approvals-queue' as const, label: 'Approvals Queue', icon: Clock },
     { id: 'agent-session' as const, label: 'Agent Session', icon: Bot },
     { id: 'session-list' as const, label: 'Session List', icon: List },
     { id: 'group-intake' as const, label: 'Group Posting Intake', icon: Plus },
-    { id: 'group-queue' as const, label: 'Group Posting Queue', icon: Send },
-    { id: 'dispatch-center' as const, label: 'Dispatch Center', icon: Play },
-    { id: 'connectors-center' as const, label: 'Connectors Center', icon: Server },
-    { id: 'wacli-tools' as const, label: 'WACLI Tools', icon: Zap },
-    { id: 'queue-runtime' as const, label: 'Queue Runtime', icon: Database },
+    { id: 'group-queue' as const, label: 'Outbox Queue', icon: Send },
+    { id: 'dispatch-center' as const, label: 'Send Center', icon: Play },
+    { id: 'connectors-center' as const, label: 'Service Connections', icon: Server },
+    { id: 'wacli-tools' as const, label: 'WhatsApp Actions', icon: Zap },
+    { id: 'queue-runtime' as const, label: 'Background Tasks', icon: Database },
     { id: 'properties' as const, label: 'Properties / Inventory', icon: Plus },
-    { id: 'system-health' as const, label: 'System Health & Webhook', icon: HeartPulse },
+    { id: 'system-health' as const, label: 'Health Check', icon: HeartPulse },
     { id: 'settings' as const, label: 'Settings', icon: Settings },
   ] as const;
 
@@ -164,6 +373,54 @@ export const App: React.FC = () => {
     setQueueItems([newItem, ...queueItems]);
     setActiveScreen('group-queue');
   };
+
+  const saveSettings = () => {
+    const stamp = new Intl.DateTimeFormat('en-US', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    }).format(new Date());
+    setSettingsSavedAt(stamp);
+    if (!onboarding.completed && !onboarding.skipped && onboarding.step === 3) {
+      setOnboarding((prev) => ({ ...prev, completed: true, skipped: false }));
+    }
+    alert('✅ Settings saved locally in this operator surface preview');
+  };
+
+  const onboardingProgress = onboarding.completed ? 100 : Math.round((onboarding.step / 3) * 100);
+  const selectedSafetyMode = SAFETY_MODE_META[safetyMode];
+
+  const handleOnboardingNext = () => {
+    setOnboarding((prev) => {
+      if (prev.completed) return prev;
+      if (prev.step >= 3) {
+        return { ...prev, completed: true, skipped: false };
+      }
+      return { ...prev, step: (prev.step + 1) as 1 | 2 | 3 };
+    });
+  };
+
+  const handleOnboardingBack = () => {
+    setOnboarding((prev) => {
+      if (prev.completed || prev.step <= 1) return prev;
+      return { ...prev, step: (prev.step - 1) as 1 | 2 | 3 };
+    });
+  };
+
+  const handleOnboardingSkip = () => {
+    setOnboarding((prev) => ({ ...prev, skipped: true }));
+  };
+
+  const handleOnboardingResume = () => {
+    setOnboarding((prev) => ({ ...prev, skipped: false, completed: false }));
+  };
+
+  const handleOnboardingReset = () => {
+    setOnboarding({ ...DEFAULT_ONBOARDING_STATE });
+  };
+
+  const healthyConnectors = connectors.filter((item) => item.status === 'healthy').length;
+  const allConnectorsHealthy = healthyConnectors === connectors.length;
 
   return (
     <div className="flex h-screen bg-zinc-950 text-white overflow-hidden font-sans">
@@ -260,6 +517,20 @@ export const App: React.FC = () => {
           {activeScreen === 'dashboard' && (
             <div className="space-y-8">
               <div className="text-3xl font-semibold">Dashboard</div>
+              <div className="flex items-center gap-3 text-sm text-zinc-300">
+                <span className="px-3 py-1 rounded-3xl bg-emerald-500/10 text-emerald-300">
+                  {selectedSafetyMode.label}
+                </span>
+                <span>dryRun={selectedSafetyMode.dryRun ? 'on' : 'off'}</span>
+                <span>autonomy={selectedSafetyMode.autonomy}</span>
+                {onboarding.completed ? (
+                  <span className="px-3 py-1 rounded-3xl bg-emerald-500/10 text-emerald-300">Setup complete</span>
+                ) : onboarding.skipped ? (
+                  <span className="px-3 py-1 rounded-3xl bg-amber-500/10 text-amber-300">Setup paused</span>
+                ) : (
+                  <span className="px-3 py-1 rounded-3xl bg-zinc-800 text-zinc-300">Setup {onboardingProgress}%</span>
+                )}
+              </div>
               <div className="grid grid-cols-4 gap-6">
                 <div className="bg-zinc-900 rounded-3xl p-8 border border-zinc-800">
                   <div className="text-sm text-zinc-400 mb-2">Total Listings Published</div>
@@ -273,8 +544,10 @@ export const App: React.FC = () => {
                 </div>
                 <div className="bg-zinc-900 rounded-3xl p-8 border border-zinc-800">
                   <div className="text-sm text-zinc-400 mb-2">Active Connectors</div>
-                  <div className="text-4xl font-bold">7/7</div>
-                  <div className="text-xs text-emerald-400 mt-4">All healthy</div>
+                  <div className="text-4xl font-bold">{healthyConnectors}/{connectors.length}</div>
+                  <div className={`text-xs mt-4 ${allConnectorsHealthy ? 'text-emerald-400' : 'text-amber-400'}`}>
+                    {allConnectorsHealthy ? 'All healthy' : 'Some need attention'}
+                  </div>
                 </div>
                 <div className="bg-zinc-900 rounded-3xl p-8 border border-zinc-800">
                   <div className="text-sm text-zinc-400 mb-2">Queue Depth</div>
@@ -282,6 +555,146 @@ export const App: React.FC = () => {
                   <div className="text-xs text-amber-400 mt-4">2 processing</div>
                 </div>
               </div>
+
+              {!onboarding.completed && !onboarding.skipped && (
+                <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-8 space-y-6">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-xl font-semibold">First-Time Setup</div>
+                      <div className="text-sm text-zinc-400 mt-1">Complete these 3 steps once. We will remember your progress.</div>
+                    </div>
+                    <div className="text-sm text-zinc-400">Step {onboarding.step}/3</div>
+                  </div>
+
+                  <div className="w-full h-2 rounded-full bg-zinc-800 overflow-hidden">
+                    <div className="h-full bg-emerald-500 transition-all duration-300" style={{ width: `${onboardingProgress}%` }} />
+                  </div>
+
+                  {onboarding.step === 1 && (
+                    <div className="space-y-3">
+                      <div className="text-sm text-zinc-300">Choose how controlled execution should be.</div>
+                      <div className="grid grid-cols-3 gap-4">
+                        {SAFETY_MODE_ORDER.map((modeId) => {
+                          const mode = SAFETY_MODE_META[modeId];
+                          const selected = safetyMode === modeId;
+                          return (
+                            <button
+                              key={modeId}
+                              onClick={() => setSafetyMode(modeId)}
+                              className={`text-left rounded-3xl border p-4 transition-colors ${selected ? 'border-emerald-400 bg-emerald-500/10' : 'border-zinc-700 hover:border-zinc-500'}`}
+                            >
+                              <div className="font-medium">{mode.label}</div>
+                              <div className="text-xs text-zinc-400 mt-2">{mode.subtitle}</div>
+                              <div className="text-xs text-zinc-500 mt-2">dryRun={mode.dryRun ? 'on' : 'off'} · autonomy={mode.autonomy}</div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {onboarding.step === 2 && (
+                    <div className="space-y-4">
+                      <div className="text-sm text-zinc-300">Set your operator defaults for faster daily operations.</div>
+                      <div className="grid grid-cols-2 gap-4">
+                        <input
+                          value={operatorProfile.name}
+                          onChange={(e) => setOperatorProfile({ ...operatorProfile, name: e.target.value })}
+                          placeholder="Operator name"
+                          className="w-full rounded-3xl py-3 px-5 bg-zinc-800 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                        />
+                        <input
+                          value={operatorProfile.phone}
+                          onChange={(e) => setOperatorProfile({ ...operatorProfile, phone: e.target.value })}
+                          placeholder="Default phone (+E164)"
+                          className="w-full rounded-3xl py-3 px-5 bg-zinc-800 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                        />
+                        <input
+                          value={operatorProfile.city}
+                          onChange={(e) => setOperatorProfile({ ...operatorProfile, city: e.target.value })}
+                          placeholder="Default city"
+                          className="w-full rounded-3xl py-3 px-5 bg-zinc-800 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                        />
+                        <select
+                          value={operatorProfile.lang}
+                          onChange={(e) => setOperatorProfile({ ...operatorProfile, lang: e.target.value as OperatorLanguage })}
+                          className="w-full rounded-3xl py-3 px-5 bg-zinc-800 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                        >
+                          <option value="en">en</option>
+                          <option value="hi">hi</option>
+                          <option value="hinglish">hinglish</option>
+                        </select>
+                      </div>
+                    </div>
+                  )}
+
+                  {onboarding.step === 3 && (
+                    <div className="bg-zinc-800/70 rounded-3xl p-5 space-y-2 text-sm text-zinc-300">
+                      <div>Safety mode: <span className="text-white">{selectedSafetyMode.label}</span></div>
+                      <div>Operator: <span className="text-white">{operatorProfile.name || 'Not set'}</span></div>
+                      <div>Phone: <span className="text-white">{operatorProfile.phone || 'Not set'}</span></div>
+                      <div>City: <span className="text-white">{operatorProfile.city || 'Not set'}</span></div>
+                      <div>Language: <span className="text-white">{operatorProfile.lang}</span></div>
+                      <div className="text-zinc-400 pt-2">You can edit these any time from Settings.</div>
+                    </div>
+                  )}
+
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={handleOnboardingSkip}
+                      className="px-4 py-2 rounded-3xl border border-zinc-700 text-zinc-300 hover:border-zinc-500 transition-colors"
+                    >
+                      Skip for now
+                    </button>
+                    <button
+                      onClick={handleOnboardingBack}
+                      disabled={onboarding.step === 1}
+                      className="px-4 py-2 rounded-3xl border border-zinc-700 text-zinc-300 disabled:opacity-40 hover:border-zinc-500 transition-colors"
+                    >
+                      Back
+                    </button>
+                    <button
+                      onClick={handleOnboardingNext}
+                      className="px-6 py-2 rounded-3xl bg-emerald-600 hover:bg-emerald-700 transition-colors font-medium"
+                    >
+                      {onboarding.step === 3 ? 'Finish setup' : 'Next'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {onboarding.skipped && !onboarding.completed && (
+                <div className="bg-amber-500/10 border border-amber-500/30 rounded-3xl p-6 flex items-center justify-between">
+                  <div className="text-sm text-amber-200">Setup is paused. Resume onboarding when you are ready.</div>
+                  <button
+                    onClick={handleOnboardingResume}
+                    className="px-5 py-2 rounded-3xl bg-amber-500/20 text-amber-100 hover:bg-amber-500/30 transition-colors"
+                  >
+                    Resume setup
+                  </button>
+                </div>
+              )}
+
+              {onboarding.completed && (
+                <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-3xl p-6 flex items-center justify-between">
+                  <div className="text-sm text-emerald-200">Setup complete. Defaults are saved and will resume automatically.</div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setActiveScreen('settings')}
+                      className="px-5 py-2 rounded-3xl border border-emerald-400/40 text-emerald-100 hover:bg-emerald-500/20 transition-colors"
+                    >
+                      Open settings
+                    </button>
+                    <button
+                      onClick={handleOnboardingReset}
+                      className="px-5 py-2 rounded-3xl border border-zinc-600 text-zinc-300 hover:border-zinc-500 transition-colors"
+                    >
+                      Reset setup
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <button onClick={() => setActiveScreen('publish-studio')} className="mt-8 px-8 py-4 bg-emerald-600 rounded-3xl font-medium hover:bg-emerald-700 transition-colors">
                 Create New Listing →
               </button>
@@ -452,8 +865,11 @@ export const App: React.FC = () => {
 
           {activeScreen === 'portal-status' && (
             <div className="max-w-4xl mx-auto space-y-8">
-              <div className="text-3xl font-semibold mb-2">PropAI Live Bridge • Adapter Status</div>
-              <div className="text-zinc-400">99acres + MagicBricks real-time adapters</div>
+              <div className="text-3xl font-semibold mb-2">Publishing Connections</div>
+              <div className="text-zinc-400">These links let PropAI post listings to 99acres and MagicBricks.</div>
+              <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-5 text-sm text-zinc-300">
+                What to do: if either card below is not connected, open Settings and update your publish URL or API key.
+              </div>
 
               {/* 99acres Adapter */}
               <div className="bg-zinc-900 rounded-3xl p-8">
@@ -462,7 +878,7 @@ export const App: React.FC = () => {
                     <div className="text-4xl">🇮🇳</div>
                     <div>
                       <div className="text-2xl font-semibold">99acres Adapter</div>
-                      <div className="text-emerald-400 text-sm">PROPAI_LIVE_99ACRES_POST_URL</div>
+                      <div className="text-emerald-400 text-sm">Posting endpoint</div>
                     </div>
                   </div>
                   <div className="px-8 py-3 bg-emerald-500/10 text-emerald-400 rounded-3xl text-sm font-medium">CONNECTED • 99.8% uptime</div>
@@ -479,7 +895,7 @@ export const App: React.FC = () => {
                     <div className="text-4xl">🏠</div>
                     <div>
                       <div className="text-2xl font-semibold">MagicBricks Adapter</div>
-                      <div className="text-emerald-400 text-sm">PROPAI_LIVE_MAGICBRICKS_POST_URL</div>
+                      <div className="text-emerald-400 text-sm">Posting endpoint</div>
                     </div>
                   </div>
                   <div className="px-8 py-3 bg-emerald-500/10 text-emerald-400 rounded-3xl text-sm font-medium">CONNECTED • 99.9% uptime</div>
@@ -491,7 +907,7 @@ export const App: React.FC = () => {
 
               {/* Live API Key Readiness */}
               <div className="bg-gradient-to-br from-zinc-900 to-zinc-950 border border-emerald-500/30 rounded-3xl p-8">
-                <div className="uppercase text-xs tracking-widest mb-1">PROPAI_LIVE_API_KEY</div>
+                <div className="uppercase text-xs tracking-widest mb-1">Publishing API Key</div>
                 <div className="font-mono text-lg break-all">{propaiEnv.PROPAI_LIVE_API_KEY.value}</div>
                 <div className="mt-6 flex items-center gap-2 text-emerald-400">
                   <div className="w-4 h-4 bg-emerald-500 rounded-full" /> Fully ready for both adapters
@@ -502,17 +918,19 @@ export const App: React.FC = () => {
 
           {activeScreen === 'connectors-center' && (
             <div>
-              <div className="text-3xl font-semibold mb-10">All Connectors (7)</div>
+              <div className="text-3xl font-semibold mb-3">Service Connections ({connectors.length})</div>
+              <div className="text-zinc-400 mb-8">Each card shows one service PropAI depends on. If a card says "Needs attention", click check now.</div>
               <div className="grid grid-cols-3 gap-6">
                 {connectors.map(connector => (
                   <div key={connector.id} className={`bg-zinc-900 rounded-3xl p-8 transition-all hover:-translate-y-1 ${connector.special ? 'ring-2 ring-offset-4 ring-offset-zinc-950 ring-emerald-500' : ''}`}>
                     <div className="flex justify-between">
                       <div className="text-2xl font-medium">{connector.name}</div>
                       <div className={`px-5 py-1 text-xs rounded-3xl font-medium ${connector.status === 'healthy' ? 'bg-emerald-500/10 text-emerald-400' : connector.status === 'warning' ? 'bg-amber-500/10 text-amber-400' : 'bg-red-500/10 text-red-400'}`}>
-                        {connector.status.toUpperCase()}
+                        {CONNECTOR_STATUS_LABEL[connector.status]}
                       </div>
                     </div>
-                    <div className="mt-8 text-xs text-zinc-500">Last healthy ping</div>
+                    <div className="mt-4 text-xs text-zinc-400">{CONNECTOR_HELP_TEXT[connector.id] || 'Connected service'}</div>
+                    <div className="mt-8 text-xs text-zinc-500">Last checked</div>
                     <div className="text-4xl font-mono tracking-tighter text-white/70">{connector.lastPing}</div>
                     
                     {connector.special && (
@@ -523,7 +941,7 @@ export const App: React.FC = () => {
                       onClick={() => testConnector(connector.id)}
                       className="mt-10 w-full py-4 border border-zinc-700 hover:border-white rounded-3xl text-sm transition-colors"
                     >
-                      TEST CONNECTION
+                      Check now
                     </button>
                   </div>
                 ))}
@@ -560,7 +978,25 @@ export const App: React.FC = () => {
           )}
 
           {activeScreen === 'approvals-queue' && (
-            <div className="text-center text-5xl text-zinc-600 font-light py-32">Approvals Queue UI<br />(bulk approve/deny ready)</div>
+            <div className="max-w-2xl mx-auto bg-zinc-900 border border-zinc-800 rounded-3xl p-8 space-y-4">
+              <div className="text-2xl font-semibold">Approval Queue</div>
+              <div className="text-zinc-300">Nothing runs silently. You review sensitive actions before they go live.</div>
+              <div className="grid grid-cols-3 gap-4 pt-2">
+                <div className="bg-zinc-800 rounded-2xl p-4">
+                  <div className="text-xs text-zinc-400">Pending now</div>
+                  <div className="text-2xl font-semibold">0</div>
+                </div>
+                <div className="bg-zinc-800 rounded-2xl p-4">
+                  <div className="text-xs text-zinc-400">High priority</div>
+                  <div className="text-2xl font-semibold">0</div>
+                </div>
+                <div className="bg-zinc-800 rounded-2xl p-4">
+                  <div className="text-xs text-zinc-400">Needs review first</div>
+                  <div className="text-2xl font-semibold">None</div>
+                </div>
+              </div>
+              <div className="text-sm text-zinc-400">When actions arrive, they will appear here with clear approve/deny buttons.</div>
+            </div>
           )}
 
           {activeScreen === 'agent-session' && (
@@ -584,32 +1020,40 @@ export const App: React.FC = () => {
           )}
 
           {activeScreen === 'group-queue' && (
-            <div className="bg-zinc-900 rounded-3xl">
-              <div className="flex border-b border-zinc-800">
-                {(['queued','processing','sent','failed'] as const).map(s => (
-                  <button key={s} className={`flex-1 py-5 text-sm font-medium transition-colors ${queueItems[0]?.status === s ? 'border-b-2 border-white' : 'text-zinc-400'}`}>
-                    {s.toUpperCase()} ({queueItems.filter(i => i.status === s).length})
-                  </button>
+            <div className="space-y-4">
+              <div className="text-zinc-300">Outbox queue shows what is waiting to be sent, currently sending, done, or needing retry.</div>
+              <div className="bg-zinc-900 rounded-3xl">
+                <div className="flex border-b border-zinc-800">
+                  {(['queued', 'processing', 'sent', 'failed'] as const).map(s => (
+                    <button key={s} className={`flex-1 py-5 text-sm font-medium transition-colors ${queueItems[0]?.status === s ? 'border-b-2 border-white' : 'text-zinc-400'}`}>
+                      {QUEUE_STATUS_LABEL[s]} ({queueItems.filter(i => i.status === s).length})
+                    </button>
+                  ))}
+                </div>
+                {queueItems.map(item => (
+                  <div key={item.id} className="p-8 border-b border-zinc-800 flex justify-between items-center">
+                    <div>
+                      <div>{item.content}</div>
+                      <div className="text-xs text-zinc-400 mt-1">Status: {QUEUE_STATUS_LABEL[item.status]} · Target: {item.targets}</div>
+                    </div>
+                    <button onClick={() => alert('Requeued')} className="text-xs px-6 py-2 border border-zinc-700 rounded-3xl hover:border-white transition-colors">Try again</button>
+                  </div>
                 ))}
               </div>
-              {queueItems.map(item => (
-                <div key={item.id} className="p-8 border-b border-zinc-800 flex justify-between items-center">
-                  <div>{item.content}</div>
-                  <button onClick={() => alert('Requeued')} className="text-xs px-6 py-2 border border-zinc-700 rounded-3xl hover:border-white transition-colors">REQUEUE</button>
-                </div>
-              ))}
             </div>
           )}
 
           {activeScreen === 'dispatch-center' && (
             <div className="max-w-md mx-auto text-center py-20">
-              <button onClick={() => alert('🚀 Manual dispatch triggered')} className="bg-white text-xl text-black px-16 py-8 rounded-3xl font-semibold hover:bg-zinc-100 transition-colors">RUN MANUAL DISPATCH NOW</button>
-              <div className="mt-16 text-zinc-500">Last scheduler run: 11 minutes ago</div>
+              <div className="text-zinc-300 mb-8">Use this when you want to send due items immediately.</div>
+              <button onClick={() => alert('🚀 Manual dispatch triggered')} className="bg-white text-xl text-black px-16 py-8 rounded-3xl font-semibold hover:bg-zinc-100 transition-colors">Send due items now</button>
+              <div className="mt-16 text-zinc-500">Last auto-run: 11 minutes ago</div>
             </div>
           )}
 
           {activeScreen === 'wacli-tools' && (
             <div>
+              <div className="text-zinc-300 mb-6">WhatsApp Actions help you send a message, search chats, and run quick connection checks.</div>
               <div className="flex border-b border-zinc-700 mb-8">
                 {(['send','search','chats','doctor'] as const).map(tab => (
                   <button 
@@ -623,9 +1067,9 @@ export const App: React.FC = () => {
               </div>
               {activeWacliTab === 'send' && (
                 <div className="max-w-lg">
-                  <input placeholder="+91 phone or group ID" className="w-full rounded-3xl py-6 px-8 bg-zinc-900 mb-4 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500" />
-                  <textarea placeholder="Message..." className="w-full h-52 rounded-3xl py-6 px-8 bg-zinc-900 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500" />
-                  <button onClick={() => setWacliOutput('✅ Sent via WACLI')} className="mt-6 w-full py-6 bg-emerald-600 rounded-3xl hover:bg-emerald-700 transition-colors">SEND VIA WACLI</button>
+                  <input placeholder="Recipient phone or group ID" className="w-full rounded-3xl py-6 px-8 bg-zinc-900 mb-4 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+                  <textarea placeholder="Type your message" className="w-full h-52 rounded-3xl py-6 px-8 bg-zinc-900 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+                  <button onClick={() => setWacliOutput('✅ Message sent successfully')} className="mt-6 w-full py-6 bg-emerald-600 rounded-3xl hover:bg-emerald-700 transition-colors">Send message</button>
                   {wacliOutput && <div className="mt-6 text-emerald-400 text-center font-medium">{wacliOutput}</div>}
                 </div>
               )}
@@ -635,26 +1079,182 @@ export const App: React.FC = () => {
           {activeScreen === 'queue-runtime' && (
             <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-3xl p-12 max-w-lg mx-auto text-center">
               <div className="text-6xl mb-6">✅</div>
-              <div className="text-3xl font-medium">Redis Queue Healthy</div>
-              <div className="text-emerald-400 mt-3">Fallback mode: OFF</div>
+              <div className="text-3xl font-medium">Background Task Engine is healthy</div>
+              <div className="text-emerald-400 mt-3">Auto-send queue is running normally</div>
+              <div className="text-zinc-300 mt-4">No action needed right now.</div>
             </div>
           )}
 
           {activeScreen === 'properties' && <div className="text-center py-40 text-6xl text-zinc-700 font-light">Properties Inventory<br />(/properties table)</div>}
 
           {activeScreen === 'system-health' && (
-            <div className="grid grid-cols-2 gap-6 max-w-3xl">
-              <div className="bg-zinc-900 rounded-3xl p-8">/health → <span className="text-emerald-400">200 OK</span></div>
-              <div className="bg-zinc-900 rounded-3xl p-8">Webhook verified → <span className="text-emerald-400">OK</span></div>
+            <div className="max-w-3xl space-y-6">
+              <div className="text-zinc-300">Quick health check for core services.</div>
+              <div className="grid grid-cols-2 gap-6">
+                <div className="bg-zinc-900 rounded-3xl p-8">
+                  <div className="text-sm text-zinc-400 mb-2">App status</div>
+                  <div className="text-2xl font-semibold text-emerald-400">Running</div>
+                </div>
+                <div className="bg-zinc-900 rounded-3xl p-8">
+                  <div className="text-sm text-zinc-400 mb-2">Webhook status</div>
+                  <div className="text-2xl font-semibold text-emerald-400">Connected</div>
+                </div>
+              </div>
+              <div className="bg-zinc-900 rounded-3xl p-5 text-sm text-zinc-400">
+                If either item is not green, go to Service Connections and run checks.
+              </div>
             </div>
           )}
 
           {activeScreen === 'settings' && (
-            <div className="max-w-md space-y-8">
-              <div className="bg-zinc-900 rounded-3xl p-8">
-                <div className="font-medium mb-6">Business Profile Defaults</div>
-                <input className="w-full rounded-3xl py-4 px-6 bg-zinc-800 mb-4 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500" placeholder="Default price prefix" />
-                <button className="w-full py-4 bg-white text-black rounded-3xl hover:bg-zinc-100 transition-colors">Save Settings</button>
+            <div className="max-w-2xl space-y-8">
+              <div className="bg-zinc-900 rounded-3xl p-8 space-y-6">
+                <div className="font-medium text-lg">Business Profile Defaults</div>
+                <div>
+                  <label className="block text-sm font-medium mb-3">Default Price Prefix</label>
+                  <input
+                    className="w-full rounded-3xl py-4 px-6 bg-zinc-800 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    placeholder="Cr"
+                    value={settingsForm.businessPricePrefix}
+                    onChange={(e) => setSettingsForm({ ...settingsForm, businessPricePrefix: e.target.value })}
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium mb-3">Operator Name</label>
+                    <input
+                      value={operatorProfile.name}
+                      onChange={(e) => setOperatorProfile({ ...operatorProfile, name: e.target.value })}
+                      placeholder="Name"
+                      className="w-full rounded-3xl py-4 px-6 bg-zinc-800 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-3">Default Phone</label>
+                    <input
+                      value={operatorProfile.phone}
+                      onChange={(e) => setOperatorProfile({ ...operatorProfile, phone: e.target.value })}
+                      placeholder="+91..."
+                      className="w-full rounded-3xl py-4 px-6 bg-zinc-800 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-3">Default City</label>
+                    <input
+                      value={operatorProfile.city}
+                      onChange={(e) => setOperatorProfile({ ...operatorProfile, city: e.target.value })}
+                      placeholder="City"
+                      className="w-full rounded-3xl py-4 px-6 bg-zinc-800 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-3">Language</label>
+                    <select
+                      value={operatorProfile.lang}
+                      onChange={(e) => setOperatorProfile({ ...operatorProfile, lang: e.target.value as OperatorLanguage })}
+                      className="w-full rounded-3xl py-4 px-6 bg-zinc-800 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    >
+                      <option value="en">en</option>
+                      <option value="hi">hi</option>
+                      <option value="hinglish">hinglish</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="space-y-3">
+                  <label className="block text-sm font-medium">Safety Mode</label>
+                  <div className="grid grid-cols-3 gap-3">
+                    {SAFETY_MODE_ORDER.map((modeId) => (
+                      <button
+                        key={modeId}
+                        onClick={() => setSafetyMode(modeId)}
+                        className={`rounded-3xl border p-3 text-left transition-colors ${safetyMode === modeId ? 'border-emerald-400 bg-emerald-500/10' : 'border-zinc-700 hover:border-zinc-500'}`}
+                      >
+                        <div className="text-sm font-medium">{SAFETY_MODE_META[modeId].label}</div>
+                        <div className="text-[11px] text-zinc-400 mt-1">{SAFETY_MODE_META[modeId].subtitle}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-zinc-900 rounded-3xl p-8 space-y-8">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="font-medium text-lg">LLM Providers</div>
+                    <div className="text-sm text-zinc-400 mt-1">Configure cloud fallback providers used by chat and agent flows.</div>
+                  </div>
+                  <div className="px-4 py-2 bg-zinc-800 rounded-3xl text-xs text-zinc-300">
+                    Priority: OpenRouter → xAI → Ollama
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="col-span-2">
+                    <div className="text-sm font-medium mb-3">OpenRouter API Key</div>
+                    <input
+                      type="password"
+                      value={settingsForm.openrouterApiKey}
+                      onChange={(e) => setSettingsForm({ ...settingsForm, openrouterApiKey: e.target.value })}
+                      placeholder="sk-or-..."
+                      className="w-full rounded-3xl py-4 px-6 bg-zinc-800 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    />
+                  </div>
+                  <div className="col-span-2">
+                    <div className="text-sm font-medium mb-3">OpenRouter Model</div>
+                    <select
+                      value={settingsForm.openrouterModel}
+                      onChange={(e) => setSettingsForm({ ...settingsForm, openrouterModel: e.target.value })}
+                      className="w-full rounded-3xl py-4 px-6 bg-zinc-800 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    >
+                      {OPENROUTER_MODELS.map((modelId) => (
+                        <option key={modelId} value={modelId}>
+                          {modelId}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="text-xs text-zinc-500 mt-2">Model selection is attached to this API key configuration.</div>
+                  </div>
+                </div>
+
+                <div className="h-px bg-zinc-800" />
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="col-span-2">
+                    <div className="text-sm font-medium mb-3">xAI API Key</div>
+                    <input
+                      type="password"
+                      value={settingsForm.xaiApiKey}
+                      onChange={(e) => setSettingsForm({ ...settingsForm, xaiApiKey: e.target.value })}
+                      placeholder="xai-..."
+                      className="w-full rounded-3xl py-4 px-6 bg-zinc-800 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    />
+                  </div>
+                  <div className="col-span-2">
+                    <div className="text-sm font-medium mb-3">xAI Model</div>
+                    <select
+                      value={settingsForm.xaiModel}
+                      onChange={(e) => setSettingsForm({ ...settingsForm, xaiModel: e.target.value })}
+                      className="w-full rounded-3xl py-4 px-6 bg-zinc-800 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    >
+                      {XAI_MODELS.map((modelId) => (
+                        <option key={modelId} value={modelId}>
+                          {modelId}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="text-xs text-zinc-500 mt-2">Model selection is attached to this API key configuration.</div>
+                  </div>
+                </div>
+
+                <button
+                  onClick={saveSettings}
+                  className="w-full py-4 bg-white text-black rounded-3xl hover:bg-zinc-100 transition-colors font-medium"
+                >
+                  Save Settings
+                </button>
+                {settingsSavedAt && (
+                  <div className="text-xs text-emerald-400 text-center">Saved at {settingsSavedAt}</div>
+                )}
               </div>
             </div>
           )}
