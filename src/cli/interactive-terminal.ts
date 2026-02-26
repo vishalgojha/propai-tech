@@ -8,6 +8,22 @@ import { RealtorSuiteAgentEngine } from "../agentic/suite/engine.js";
 import { generateAssistantText } from "../llm/chat.js";
 import { getOllamaStatus } from "../llm/ollama.js";
 import { isOpenRouterEnabled } from "../llm/openrouter.js";
+import { isXaiEnabled } from "../llm/xai.js";
+import { findClosestTerm } from "./command-hints.js";
+import { colorizeAnsi, getPropaiAnsiLogoLines } from "./branding.js";
+import {
+  DEFAULT_THEME,
+  getTerminalTheme,
+  listTerminalThemes,
+  parseTerminalThemeId,
+  type TerminalThemeId
+} from "./theme-pack.js";
+import {
+  getTerminalPrefsPath,
+  loadTerminalUserPrefs,
+  saveTerminalUserPrefs,
+  type TerminalUserPrefs
+} from "./user-prefs.js";
 import {
   runAdsLeadQualification,
   runGeneratePerformanceReport,
@@ -23,9 +39,12 @@ import type { LeadInput, PreferredLanguage } from "../agentic/types.js";
 
 type CliRl = ReturnType<typeof createInterface>;
 type AutonomyLevel = 0 | 1 | 2;
+type OperatorMode = "guided" | "expert";
 type ChatHistoryMessage = { role: "user" | "assistant"; content: string };
 
 type SessionState = {
+  operatorMode: OperatorMode;
+  theme: TerminalThemeId;
   autonomy: AutonomyLevel;
   dryRun: boolean;
   recipient?: string;
@@ -43,6 +62,20 @@ type SessionState = {
 const DEFAULT_DRY_RUN = process.env.WACLI_DRY_RUN !== "false";
 const LOCAL_WRITE_TOOLS: ToolName[] = ["schedule_site_visit"];
 const EXTERNAL_TOOLS: ToolName[] = ["post_to_99acres", "post_to_magicbricks", "send_whatsapp_followup"];
+const COMMANDS = ["help", "state", "llm", "mode", "clear", "set", "exit", "back", "quit"] as const;
+const SET_KEYS = [
+  "autonomy",
+  "dryrun",
+  "recipient",
+  "model",
+  "name",
+  "phone",
+  "city",
+  "lang",
+  "language",
+  "wizard",
+  "theme"
+] as const;
 
 const suiteEngine = new RealtorSuiteAgentEngine();
 const orchestrator = new RealtorOrchestrator();
@@ -50,7 +83,7 @@ const orchestrator = new RealtorOrchestrator();
 async function main() {
   const rl = createInterface({ input, output });
   const menuMode = process.argv.includes("--menu");
-  printBanner(menuMode ? "menu" : "shell");
+  printBanner(menuMode ? "menu" : "shell", DEFAULT_THEME);
 
   try {
     if (menuMode) {
@@ -97,6 +130,8 @@ async function runClassicMenu(rl: CliRl) {
 
 async function runAgenticSession(rl: CliRl) {
   const state: SessionState = {
+    operatorMode: "guided",
+    theme: DEFAULT_THEME,
     autonomy: 1,
     dryRun: DEFAULT_DRY_RUN,
     recipient: undefined,
@@ -105,10 +140,21 @@ async function runAgenticSession(rl: CliRl) {
     turns: 0,
     history: []
   };
+  const loadedPrefs = await loadTerminalUserPrefs();
+  if (loadedPrefs) {
+    applyPrefsToSessionState(state, loadedPrefs);
+    // eslint-disable-next-line no-console
+    console.log(`Loaded saved defaults from ${getTerminalPrefsPath()}`);
+  } else {
+    await persistSessionPrefs(state, false);
+  }
 
   printAgenticHelp();
+  // eslint-disable-next-line no-console
+  console.log("Guided mode is ON. Use /mode expert for strict command behavior.");
 
   while (true) {
+    printStatusStrip(state);
     const raw = await ask(rl, "propai");
     if (!raw) continue;
 
@@ -130,7 +176,8 @@ async function runAgenticSession(rl: CliRl) {
 async function handleSessionCommand(rl: CliRl, state: SessionState, raw: string): Promise<boolean> {
   const text = raw.slice(1).trim();
   const [command, ...rest] = text.split(/\s+/);
-  const cmd = (command || "").toLowerCase();
+  const inputCmd = (command || "").toLowerCase();
+  const cmd = resolveCommand(state, inputCmd);
   const value = rest.join(" ").trim();
 
   if (cmd === "exit" || cmd === "back" || cmd === "quit") return true;
@@ -150,11 +197,18 @@ async function handleSessionCommand(rl: CliRl, state: SessionState, raw: string)
     return false;
   }
 
+  if (cmd === "mode") {
+    applyModeCommand(state, value);
+    await persistSessionPrefs(state);
+    return false;
+  }
+
   if (cmd === "clear") {
     state.recipient = undefined;
     state.model = undefined;
     state.leadDefaults = {};
     state.history = [];
+    await persistSessionPrefs(state);
     // eslint-disable-next-line no-console
     console.log("Session defaults cleared.");
     return false;
@@ -162,17 +216,121 @@ async function handleSessionCommand(rl: CliRl, state: SessionState, raw: string)
 
   if (cmd === "set") {
     await applySetCommand(rl, state, value);
+    await persistSessionPrefs(state);
+    return false;
+  }
+
+  const suggestion = findClosestTerm(inputCmd, COMMANDS, 2);
+  if (suggestion) {
+    // eslint-disable-next-line no-console
+    console.log(`Unknown command: /${inputCmd}. Did you mean /${suggestion}?`);
     return false;
   }
 
   // eslint-disable-next-line no-console
-  console.log(`Unknown command: /${cmd}. Use /help.`);
+  console.log(`Unknown command: /${inputCmd}. Use /help.`);
   return false;
+}
+
+function resolveCommand(state: SessionState, inputCmd: string): string {
+  const normalized = normalizeCommand(inputCmd);
+  if (COMMANDS.includes(normalized as (typeof COMMANDS)[number])) {
+    return normalized;
+  }
+
+  const suggestion = findClosestTerm(normalized, COMMANDS, 2);
+  if (suggestion && state.operatorMode === "guided") {
+    // eslint-disable-next-line no-console
+    console.log(`Interpreting /${inputCmd} as /${suggestion}.`);
+    return suggestion;
+  }
+
+  return normalized;
+}
+
+function normalizeCommand(command: string): string {
+  if (command === "q") return "quit";
+  return command;
+}
+
+function applyModeCommand(state: SessionState, value: string): void {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) {
+    // eslint-disable-next-line no-console
+    console.log(`mode=${state.operatorMode}. Use /mode guided or /mode expert.`);
+    return;
+  }
+
+  if (normalized === "guided" || normalized === "expert") {
+    state.operatorMode = normalized;
+    // eslint-disable-next-line no-console
+    console.log(`mode=${state.operatorMode}`);
+    return;
+  }
+
+  const suggestion = findClosestTerm(normalized, ["guided", "expert"], 2);
+  if (suggestion) {
+    state.operatorMode = suggestion as OperatorMode;
+    // eslint-disable-next-line no-console
+    console.log(`mode=${state.operatorMode} (auto-corrected)`);
+    return;
+  }
+
+  // eslint-disable-next-line no-console
+  console.log("mode must be guided or expert.");
+}
+
+function applyPrefsToSessionState(state: SessionState, prefs: TerminalUserPrefs): void {
+  if (prefs.operatorMode) state.operatorMode = prefs.operatorMode;
+  if (prefs.theme) state.theme = prefs.theme;
+  if (prefs.autonomy === 0 || prefs.autonomy === 1 || prefs.autonomy === 2) {
+    state.autonomy = prefs.autonomy;
+  }
+  if (typeof prefs.dryRun === "boolean") state.dryRun = prefs.dryRun;
+  state.recipient = prefs.recipient || undefined;
+  state.model = prefs.model || undefined;
+
+  const lead = prefs.leadDefaults || {};
+  state.leadDefaults = {
+    name: lead.name || undefined,
+    phone: lead.phone || undefined,
+    city: lead.city || undefined,
+    preferredLanguage: lead.preferredLanguage
+  };
+}
+
+function buildSessionPrefs(state: SessionState): TerminalUserPrefs {
+  return {
+    version: 1,
+    operatorMode: state.operatorMode,
+    theme: state.theme,
+    autonomy: state.autonomy,
+    dryRun: state.dryRun,
+    recipient: state.recipient,
+    model: state.model,
+    leadDefaults: {
+      name: state.leadDefaults.name,
+      phone: state.leadDefaults.phone,
+      city: state.leadDefaults.city,
+      preferredLanguage: state.leadDefaults.preferredLanguage
+    }
+  };
+}
+
+async function persistSessionPrefs(state: SessionState, reportErrors = true): Promise<void> {
+  try {
+    await saveTerminalUserPrefs(buildSessionPrefs(state));
+  } catch (error) {
+    if (!reportErrors) return;
+    // eslint-disable-next-line no-console
+    console.warn(`Could not save terminal defaults: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 async function applySetCommand(rl: CliRl, state: SessionState, value: string): Promise<void> {
   const [keyRaw, ...rest] = value.split(/\s+/);
-  const key = (keyRaw || "").toLowerCase();
+  const inputKey = (keyRaw || "").toLowerCase();
+  const key = normalizeSetKey(inputKey);
   const val = rest.join(" ").trim();
 
   if (!key) {
@@ -259,8 +417,51 @@ async function applySetCommand(rl: CliRl, state: SessionState, value: string): P
     return;
   }
 
+  if (key === "theme") {
+    if (!val) {
+      // eslint-disable-next-line no-console
+      console.log(`theme=${state.theme}. Options: ${listTerminalThemes().map((item) => item.id).join(", ")}`);
+      return;
+    }
+
+    const parsedTheme = parseTerminalThemeId(val);
+    if (parsedTheme) {
+      state.theme = parsedTheme;
+      const theme = getTerminalTheme(parsedTheme);
+      // eslint-disable-next-line no-console
+      console.log(`theme=${theme.id} (${theme.label})`);
+      return;
+    }
+
+    const suggestion = findClosestTerm(val.toLowerCase(), listTerminalThemes().map((item) => item.id), 3);
+    if (suggestion) {
+      state.theme = suggestion as TerminalThemeId;
+      const theme = getTerminalTheme(state.theme);
+      // eslint-disable-next-line no-console
+      console.log(`theme=${theme.id} (${theme.label}) (auto-corrected)`);
+      return;
+    }
+
+    // eslint-disable-next-line no-console
+    console.log(`Unknown theme '${val}'. Options: ${listTerminalThemes().map((item) => item.id).join(", ")}`);
+    return;
+  }
+
+  const suggestion = findClosestTerm(inputKey, SET_KEYS, 2);
+  if (suggestion) {
+    // eslint-disable-next-line no-console
+    console.log(`Unknown set key: ${inputKey}. Applying ${suggestion}.`);
+    await applySetCommand(rl, state, `${suggestion} ${val}`.trim());
+    return;
+  }
+
   // eslint-disable-next-line no-console
-  console.log(`Unknown set key: ${key}`);
+  console.log(`Unknown set key: ${inputKey}`);
+}
+
+function normalizeSetKey(key: string): string {
+  if (key === "language") return "lang";
+  return key;
 }
 
 async function runLeadDefaultWizard(rl: CliRl, state: SessionState): Promise<void> {
@@ -405,8 +606,18 @@ async function executePlanWithApprovals(
 ): Promise<{ results: ToolExecutionRecord[]; recipient?: string }> {
   const results: ToolExecutionRecord[] = [];
   let mutableRequest: ChatRequest = { ...request };
+  let approveAll = false;
+  let denyAll = false;
 
-  for (const step of plan) {
+  // eslint-disable-next-line no-console
+  console.log("\nApproval Queue Preview:");
+  for (const [idx, step] of plan.entries()) {
+    const preview = previewStepApproval(state, step.tool, mutableRequest);
+    // eslint-disable-next-line no-console
+    console.log(`  ${idx + 1}. ${step.tool} | ${preview}`);
+  }
+
+  for (const [index, step] of plan.entries()) {
     if (step.tool === "send_whatsapp_followup" && !mutableRequest.recipient) {
       const recipient = await ask(
         rl,
@@ -415,16 +626,55 @@ async function executePlanWithApprovals(
       mutableRequest = { ...mutableRequest, recipient: recipient || undefined };
     }
 
-    const approval = await approveStep(rl, state, step.tool, mutableRequest);
-    if (!approval.allowed) {
+    const review = reviewStepApproval(state, step.tool, mutableRequest);
+    if (review.blocked) {
       const skipped: ToolExecutionRecord = {
         tool: step.tool,
         ok: false,
-        summary: `Skipped: ${approval.reason}`
+        summary: `Skipped: ${review.reason}`
       };
       results.push(skipped);
       // eslint-disable-next-line no-console
-      console.log(`Skipped ${step.tool}: ${approval.reason}`);
+      console.log(`Skipped ${step.tool}: ${review.reason}`);
+      continue;
+    }
+
+    if (review.requiresApproval && !approveAll && !denyAll) {
+      const decision = await askApprovalDecision(
+        rl,
+        `Approve #${index + 1} '${step.tool}'? [y]es/[n]o/[a]pprove-all/[d]eny-all/[x]stop`
+      );
+      if (decision === "stop") {
+        // eslint-disable-next-line no-console
+        console.log("Stopped remaining steps by operator choice.");
+        break;
+      }
+      if (decision === "deny_all") {
+        denyAll = true;
+      } else if (decision === "approve_all") {
+        approveAll = true;
+      } else if (decision === "no") {
+        const skipped: ToolExecutionRecord = {
+          tool: step.tool,
+          ok: false,
+          summary: "Skipped: not approved by operator."
+        };
+        results.push(skipped);
+        // eslint-disable-next-line no-console
+        console.log(`Skipped ${step.tool}: not approved by operator.`);
+        continue;
+      }
+    }
+
+    if (review.requiresApproval && denyAll) {
+      const skipped: ToolExecutionRecord = {
+        tool: step.tool,
+        ok: false,
+        summary: "Skipped: denied by operator (deny-all)."
+      };
+      results.push(skipped);
+      // eslint-disable-next-line no-console
+      console.log(`Skipped ${step.tool}: denied by operator (deny-all).`);
       continue;
     }
 
@@ -442,37 +692,62 @@ async function executePlanWithApprovals(
   return { results, recipient: mutableRequest.recipient };
 }
 
-async function approveStep(
-  rl: CliRl,
+function reviewStepApproval(
   state: SessionState,
   tool: ToolName,
   request: ChatRequest
-): Promise<{ allowed: boolean; reason?: string }> {
+): { requiresApproval: boolean; blocked: boolean; reason: string } {
   const isExternal = isExternalAction(tool, request);
   const isLocalWrite = LOCAL_WRITE_TOOLS.includes(tool);
 
   if (state.autonomy === 1 && isExternal) {
     return {
-      allowed: false,
+      requiresApproval: false,
+      blocked: true,
       reason: "autonomy L1 blocks external actions (send/publish)."
     };
   }
 
   if (isLocalWrite) {
-    const yes = await askYesNo(rl, `Approve local write step '${tool}'? [default N]`, false);
-    return yes
-      ? { allowed: true }
-      : { allowed: false, reason: "local write not approved by operator." };
+    return {
+      requiresApproval: true,
+      blocked: false,
+      reason: "local write requires approval."
+    };
   }
 
   if (state.autonomy === 2 && isExternal) {
-    const yes = await askYesNo(rl, `Approve external step '${tool}'? [default N]`, false);
-    return yes
-      ? { allowed: true }
-      : { allowed: false, reason: "external action not approved by operator." };
+    return {
+      requiresApproval: true,
+      blocked: false,
+      reason: "external action requires approval."
+    };
   }
 
-  return { allowed: true };
+  return {
+    requiresApproval: false,
+    blocked: false,
+    reason: "no approval required."
+  };
+}
+
+function previewStepApproval(state: SessionState, tool: ToolName, request: ChatRequest): string {
+  const review = reviewStepApproval(state, tool, request);
+  if (review.blocked) return `blocked (${review.reason})`;
+  if (review.requiresApproval) return `approval needed (${review.reason})`;
+  return "auto-execute";
+}
+
+type ApprovalDecision = "yes" | "no" | "approve_all" | "deny_all" | "stop";
+
+async function askApprovalDecision(rl: CliRl, label: string): Promise<ApprovalDecision> {
+  const raw = (await ask(rl, label)).trim().toLowerCase();
+  if (!raw || raw === "y" || raw === "yes") return "yes";
+  if (raw === "n" || raw === "no") return "no";
+  if (raw === "a" || raw === "all") return "approve_all";
+  if (raw === "d" || raw === "deny") return "deny_all";
+  if (raw === "x" || raw === "stop" || raw === "cancel") return "stop";
+  return "no";
 }
 
 function isExternalAction(tool: ToolName, request: ChatRequest): boolean {
@@ -596,6 +871,8 @@ function printSessionState(state: SessionState) {
   console.log(
     JSON.stringify(
       {
+        mode: state.operatorMode,
+        theme: state.theme,
         autonomy: state.autonomy,
         dryRun: state.dryRun,
         recipient: state.recipient || null,
@@ -610,14 +887,25 @@ function printSessionState(state: SessionState) {
   );
 }
 
+function printStatusStrip(state: SessionState) {
+  const theme = getTerminalTheme(state.theme);
+  const waMode = state.dryRun ? "WA:simulated" : "WA:live";
+  const strip = `[${state.operatorMode.toUpperCase()}] Theme=${theme.id} | A=${state.autonomy} | dryRun=${state.dryRun ? "on" : "off"} | model=${state.model || "default"} | ${waMode}`;
+  // eslint-disable-next-line no-console
+  console.log(`\n${colorizeAnsi(strip, theme.ansi.statusCode)}`);
+}
+
 async function printLlmStatus() {
   const ollama = await getOllamaStatus();
   const openrouter = isOpenRouterEnabled();
+  const xai = isXaiEnabled();
 
   // eslint-disable-next-line no-console
   console.log("LLM Status");
   // eslint-disable-next-line no-console
   console.log(`  OpenRouter: ${openrouter ? "enabled" : "disabled"}`);
+  // eslint-disable-next-line no-console
+  console.log(`  xAI: ${xai ? "enabled" : "disabled"}`);
   // eslint-disable-next-line no-console
   console.log(
     `  Ollama: ${ollama.enabled ? "enabled" : "disabled"} | reachable=${ollama.reachable} | base=${ollama.baseUrl}`
@@ -918,13 +1206,22 @@ async function askYesNo(
   return defaultValue;
 }
 
-function printBanner(mode: "shell" | "menu") {
+function printBanner(mode: "shell" | "menu", themeId: TerminalThemeId) {
+  const theme = getTerminalTheme(themeId);
   // eslint-disable-next-line no-console
   console.log("====================================");
+  for (const line of getPropaiAnsiLogoLines(theme.ansi.logoPalette)) {
+    // eslint-disable-next-line no-console
+    console.log(line);
+  }
   // eslint-disable-next-line no-console
-  console.log("PropAI Terminal");
+  console.log(colorizeAnsi("PropAI Terminal", theme.ansi.bannerCode));
   // eslint-disable-next-line no-console
   console.log(`Mode: ${mode === "shell" ? "codex-style shell" : "classic menu"}`);
+  // eslint-disable-next-line no-console
+  console.log("Operator mode default: guided");
+  // eslint-disable-next-line no-console
+  console.log(`Theme default: ${theme.id} (${theme.label})`);
   // eslint-disable-next-line no-console
   console.log(`WACLI_DRY_RUN default: ${DEFAULT_DRY_RUN ? "true" : "false"}`);
   // eslint-disable-next-line no-console
@@ -945,6 +1242,8 @@ function printAgenticHelp() {
   // eslint-disable-next-line no-console
   console.log("  /llm");
   // eslint-disable-next-line no-console
+  console.log("  /mode <guided|expert>");
+  // eslint-disable-next-line no-console
   console.log("  /set autonomy <0|1|2>");
   // eslint-disable-next-line no-console
   console.log("  /set dryrun <on|off>");
@@ -960,6 +1259,8 @@ function printAgenticHelp() {
   console.log("  /set city <text>");
   // eslint-disable-next-line no-console
   console.log("  /set lang <en|hi|hinglish>");
+  // eslint-disable-next-line no-console
+  console.log("  /set theme <pro|calm|contrast>");
   // eslint-disable-next-line no-console
   console.log("  /set wizard");
   // eslint-disable-next-line no-console

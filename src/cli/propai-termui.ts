@@ -15,6 +15,22 @@ import { RealtorOrchestrator } from "../agentic/agents/orchestrator.js";
 import { generateAssistantText } from "../llm/chat.js";
 import { getOllamaStatus } from "../llm/ollama.js";
 import { isOpenRouterEnabled } from "../llm/openrouter.js";
+import { isXaiEnabled } from "../llm/xai.js";
+import { findClosestTerm } from "./command-hints.js";
+import { getPropaiLogoLines } from "./branding.js";
+import {
+  DEFAULT_THEME,
+  getTerminalTheme,
+  listTerminalThemes,
+  parseTerminalThemeId,
+  type TerminalThemeId
+} from "./theme-pack.js";
+import {
+  getTerminalPrefsPath,
+  loadTerminalUserPrefs,
+  saveTerminalUserPrefs,
+  type TerminalUserPrefs
+} from "./user-prefs.js";
 import type { PreferredLanguage } from "../agentic/types.js";
 import type { ChatMessage } from "../llm/chat.js";
 import type {
@@ -26,6 +42,7 @@ import type {
 
 type AnyRecord = Record<string, unknown>;
 type AutonomyLevel = 0 | 1 | 2;
+type OperatorMode = "guided" | "expert";
 type MessageRole = "user" | "assistant" | "system";
 type StatusKind = "info" | "success" | "warning" | "error";
 
@@ -43,6 +60,8 @@ type LeadDefaults = {
 };
 
 type SessionState = {
+  operatorMode: OperatorMode;
+  theme: TerminalThemeId;
   autonomy: AutonomyLevel;
   dryRun: boolean;
   recipient?: string;
@@ -51,7 +70,7 @@ type SessionState = {
   input: string;
   busy: boolean;
   pulse: boolean;
-  provider: "openrouter" | "ollama" | "none";
+  provider: "openrouter" | "xai" | "ollama" | "none";
   statusText: string;
   statusKind: StatusKind;
   turns: number;
@@ -107,14 +126,37 @@ const DEFAULT_DRY_RUN = process.env.WACLI_DRY_RUN !== "false";
 const LOCAL_WRITE_TOOLS: ToolName[] = ["schedule_site_visit"];
 const EXTERNAL_TOOLS: ToolName[] = ["post_to_99acres", "post_to_magicbricks", "send_whatsapp_followup"];
 const orchestrator = new RealtorOrchestrator();
+const COMMANDS = [
+  "help",
+  "state",
+  "llm",
+  "pending",
+  "approve",
+  "deny",
+  "a",
+  "d",
+  "set",
+  "mode",
+  "clear",
+  "back",
+  "exit",
+  "quit"
+] as const;
+const SET_KEYS = ["autonomy", "dryrun", "recipient", "model", "name", "phone", "city", "lang", "language", "wizard", "theme"] as const;
 
 const HELP_TEXT = [
   "Commands:",
   "  /help",
   "  /state",
   "  /llm",
+  "  /pending",
   "  /approve",
+  "  /approve <index|next|all>",
   "  /deny",
+  "  /deny <index|next|all>",
+  "  /a  (approve next pending)",
+  "  /d  (deny next pending)",
+  "  /mode <guided|expert>",
   "  /set autonomy <0|1|2>",
   "  /set dryrun <on|off>",
   "  /set recipient <+E164|none>",
@@ -123,6 +165,8 @@ const HELP_TEXT = [
   "  /set phone <text>",
   "  /set city <text>",
   "  /set lang <en|hi|hinglish>",
+  "  /set theme <pro|calm|contrast>",
+  "  /set wizard",
   "  /clear",
   "  /back (exit shell)",
   "Direct send: msg +919820056180 Hi, sharing shortlisted options."
@@ -180,11 +224,14 @@ async function main() {
 
 function createRootComponent(vue: VueRuntime, ui: ComponentSet): unknown {
   const { defineComponent, reactive, computed, onMounted, onBeforeUnmount, h } = vue;
+  const logoLines = getPropaiLogoLines();
 
   return defineComponent({
     name: "PropAiTermUi",
     setup() {
       const state = reactive<SessionState>({
+        operatorMode: "guided",
+        theme: DEFAULT_THEME,
         autonomy: 1,
         dryRun: DEFAULT_DRY_RUN,
         recipient: undefined,
@@ -204,27 +251,46 @@ function createRootComponent(vue: VueRuntime, ui: ComponentSet): unknown {
       });
 
       const quickCommands = computed(() => [
+        "/mode expert",
+        "/set theme calm",
         "/state",
         "/llm",
-        "/set autonomy 0",
-        "/set autonomy 1",
-        "/set autonomy 2",
-        "/approve",
-        "/deny",
+        "/pending",
+        "/a",
+        "/d",
+        "/approve all",
+        "/set wizard",
         "msg +9198... Hi"
       ]);
 
       const sidebarFacts = computed(() => [
+        `mode=${state.operatorMode}`,
+        `theme=${state.theme}`,
         `autonomy=${state.autonomy}`,
         `dryRun=${String(state.dryRun)}`,
         `recipient=${state.recipient || "none"}`,
-        `model=${state.model || "default"}`,
-        `provider=${state.provider}`
+        `model=${state.model || "default"}`
       ]);
+
+      const palette = computed(() => getTerminalTheme(state.theme).tui);
+
+      const pendingFacts = computed(() => {
+        if (!state.pendingApproval || state.pendingApproval.steps.length === 0) {
+          return ["none"];
+        }
+        return state.pendingApproval.steps.map((step, index) => `${index + 1}. ${step.tool}`);
+      });
 
       const headerTicker = computed(() => {
         const pulse = state.pulse ? "[live]" : "[....]";
-        return `${pulse} PropAI Command Deck | LLM-first realtor copilot | approvals enforced`;
+        return `${pulse} PropAI Command Deck | non-technical safe mode ready | approvals enforced`;
+      });
+
+      const statusStrip = computed(() => {
+        const waMode = state.dryRun ? "wa=simulated" : "wa=live";
+        const approvalCount = state.pendingApproval?.steps.length || 0;
+        const approvalText = approvalCount > 0 ? `approvals=${approvalCount}` : "approvals=0";
+        return `Mode=${state.operatorMode} | Theme=${state.theme} | A=${state.autonomy} | dryRun=${state.dryRun ? "on" : "off"} | LLM=${state.provider} | ${waMode} | ${approvalText}`;
       });
 
       const visibleMessages = computed(() => {
@@ -239,8 +305,13 @@ function createRootComponent(vue: VueRuntime, ui: ComponentSet): unknown {
       let pulseTimer: ReturnType<typeof setInterval> | null = null;
 
       onMounted(() => {
-        addMessage(state, "assistant", "PropAI TUI online. Type a request or /help.");
+        addMessage(
+          state,
+          "assistant",
+          "PropAI TUI online in guided mode. Type a request in plain English, or run /help for commands."
+        );
         addActivity(state, "Session started");
+        void hydrateTermUiPrefs(state);
         pulseTimer = setInterval(() => {
           state.pulse = !state.pulse;
         }, 700);
@@ -280,21 +351,32 @@ function createRootComponent(vue: VueRuntime, ui: ComponentSet): unknown {
 
       return () =>
         h(ui.Box, { flexDirection: "column", height: "100%" }, [
-          h(ui.Box, { bordered: true, borderStyle: "double", borderColor: "cyan", padding: 1 }, [
+          h(ui.Box, { bordered: true, borderStyle: "double", borderColor: palette.value.headerBorder, padding: 1 }, [
             h(ui.Text, {
               text: "PropAI Terminal",
-              color: "cyan",
+              color: palette.value.brandText,
               bold: true
             }),
+            ...logoLines.map((line) =>
+              h(ui.Text, {
+                text: line,
+                color: palette.value.brandText
+              })
+            ),
             h(ui.Marquee, {
               text: headerTicker.value,
-              color: "green",
+              color: palette.value.tickerText,
               speed: 26
+            }),
+            h(ui.Text, {
+              text: statusStrip.value,
+              color: palette.value.statusText,
+              bold: true
             })
           ]),
           h(ui.Box, { flexDirection: "row", grow: 1, gap: 1, padding: 1 }, [
-            h(ui.Box, { grow: 3, bordered: true, borderColor: "magenta", padding: 1 }, [
-              h(ui.Text, { text: "Conversation", color: "yellow", bold: true }),
+            h(ui.Box, { grow: 3, bordered: true, borderColor: palette.value.conversationBorder, padding: 1 }, [
+              h(ui.Text, { text: "Conversation", color: palette.value.conversationTitle, bold: true }),
               h(ui.Separator),
               h(
                 ui.Box,
@@ -302,15 +384,15 @@ function createRootComponent(vue: VueRuntime, ui: ComponentSet): unknown {
                 visibleMessages.value.map((item) =>
                   h(ui.Text, {
                     text: `${item.at} ${labelForRole(item.role)} ${item.text}`,
-                    color: colorForRole(item.role),
+                    color: colorForRole(item.role, state.theme),
                     wrap: true
                   })
                 )
               )
             ]),
             h(ui.Box, { grow: 2, flexDirection: "column", gap: 1 }, [
-              h(ui.Box, { bordered: true, borderColor: "blue", padding: 1 }, [
-                h(ui.Text, { text: "Session", color: "cyan", bold: true }),
+              h(ui.Box, { bordered: true, borderColor: palette.value.sessionBorder, padding: 1 }, [
+                h(ui.Text, { text: "Session", color: palette.value.brandText, bold: true }),
                 h(ui.Status, { text: state.statusText, status: state.statusKind }),
                 ...sidebarFacts.value.map((line) =>
                   h(ui.Text, {
@@ -319,22 +401,31 @@ function createRootComponent(vue: VueRuntime, ui: ComponentSet): unknown {
                   })
                 )
               ]),
-              h(ui.Box, { bordered: true, borderColor: "green", padding: 1, grow: 1 }, [
-                h(ui.Text, { text: "Recent Activity", color: "green", bold: true }),
-                ...visibleActivities.value.map((line) =>
+              h(ui.Box, { bordered: true, borderColor: palette.value.approvalBorder, padding: 1 }, [
+                h(ui.Text, { text: "Approval Queue", color: palette.value.approvalBorder, bold: true }),
+                ...pendingFacts.value.map((line) =>
                   h(ui.Text, {
-                    text: `- ${line}`,
-                    color: "gray"
+                    text: line,
+                    color: line === "none" ? palette.value.pendingEmpty : palette.value.pendingItem
                   })
                 )
               ]),
-              h(ui.Box, { bordered: true, borderColor: "yellow", padding: 1 }, [
-                h(ui.Text, { text: "Quick Commands", color: "yellow", bold: true }),
+              h(ui.Box, { bordered: true, borderColor: palette.value.activityBorder, padding: 1, grow: 1 }, [
+                h(ui.Text, { text: "Recent Activity", color: palette.value.activityBorder, bold: true }),
+                ...visibleActivities.value.map((line) =>
+                  h(ui.Text, {
+                    text: `- ${line}`,
+                    color: palette.value.activityText
+                  })
+                )
+              ]),
+              h(ui.Box, { bordered: true, borderColor: palette.value.quickBorder, padding: 1 }, [
+                h(ui.Text, { text: "Quick Commands", color: palette.value.quickBorder, bold: true }),
                 h(ui.List, { items: quickCommands.value })
               ])
             ])
           ]),
-          h(ui.Box, { bordered: true, borderColor: state.busy ? "yellow" : "green", padding: 1 }, [
+          h(ui.Box, { bordered: true, borderColor: state.busy ? palette.value.inputBusy : palette.value.inputIdle, padding: 1 }, [
             state.busy && ui.Loading
               ? h(ui.Loading, {
                   text: "Thinking...",
@@ -366,7 +457,9 @@ function createRootComponent(vue: VueRuntime, ui: ComponentSet): unknown {
 async function handleSlashCommand(state: SessionState, raw: string) {
   const text = raw.slice(1).trim();
   const [commandRaw, ...rest] = text.split(/\s+/);
-  const command = (commandRaw || "").toLowerCase();
+  const inputCommand = (commandRaw || "").toLowerCase();
+  const normalizedCommand = normalizeCommand(inputCommand);
+  const command = resolveCommand(state, normalizedCommand);
   const value = rest.join(" ").trim();
 
   if (!command) return;
@@ -383,6 +476,8 @@ async function handleSlashCommand(state: SessionState, raw: string) {
       "assistant",
       JSON.stringify(
         {
+          mode: state.operatorMode,
+          theme: state.theme,
           autonomy: state.autonomy,
           dryRun: state.dryRun,
           recipient: state.recipient || null,
@@ -404,8 +499,10 @@ async function handleSlashCommand(state: SessionState, raw: string) {
     try {
       const ollama = await getOllamaStatus();
       const openrouter = isOpenRouterEnabled();
+      const xai = isXaiEnabled();
       const line = [
         `OpenRouter=${openrouter ? "enabled" : "disabled"}`,
+        `xAI=${xai ? "enabled" : "disabled"}`,
         `Ollama=${ollama.enabled ? "enabled" : "disabled"}`,
         `reachable=${ollama.reachable}`,
         `model=${ollama.selectedModel}`
@@ -422,21 +519,28 @@ async function handleSlashCommand(state: SessionState, raw: string) {
     return;
   }
 
+  if (command === "pending") {
+    showPendingQueue(state);
+    return;
+  }
+
+  if (command === "a") {
+    await approvePendingSteps(state, value || "next");
+    return;
+  }
+
+  if (command === "d") {
+    denyPendingSteps(state, value || "next");
+    return;
+  }
+
   if (command === "approve") {
-    await approvePendingSteps(state);
+    await approvePendingSteps(state, value || "all");
     return;
   }
 
   if (command === "deny") {
-    if (!state.pendingApproval) {
-      addMessage(state, "assistant", "No pending steps to deny.");
-      return;
-    }
-    const denied = state.pendingApproval.steps.map((step) => step.tool).join(", ");
-    state.pendingApproval = null;
-    addMessage(state, "assistant", `Denied pending steps: ${denied}`);
-    setStatus(state, "Pending steps denied", "warning");
-    addActivity(state, "Denied pending approval queue");
+    denyPendingSteps(state, value || "all");
     return;
   }
 
@@ -447,6 +551,7 @@ async function handleSlashCommand(state: SessionState, raw: string) {
     state.pendingApproval = null;
     addMessage(state, "assistant", "Session cleared.");
     addActivity(state, "Cleared session");
+    void persistTermUiPrefs(state);
     return;
   }
 
@@ -464,12 +569,163 @@ async function handleSlashCommand(state: SessionState, raw: string) {
     return;
   }
 
-  addMessage(state, "assistant", `Unknown command: /${command}. Use /help.`);
+  if (command === "mode") {
+    applyModeCommand(state, value);
+    void persistTermUiPrefs(state);
+    return;
+  }
+
+  const suggestion = findClosestTerm(inputCommand, COMMANDS, 2);
+  if (suggestion) {
+    addMessage(state, "assistant", `Unknown command: /${inputCommand}. Did you mean /${suggestion}?`);
+    return;
+  }
+
+  addMessage(state, "assistant", `Unknown command: /${inputCommand}. Use /help.`);
+}
+
+function normalizeCommand(command: string): string {
+  if (command === "a") return "a";
+  if (command === "d") return "d";
+  if (command === "q") return "back";
+  return command;
+}
+
+function resolveCommand(state: SessionState, command: string): string | null {
+  if (!command) return null;
+  if (COMMANDS.includes(command as (typeof COMMANDS)[number])) {
+    return command;
+  }
+
+  const suggestion = findClosestTerm(command, COMMANDS, 2);
+  if (!suggestion) return command;
+
+  if (state.operatorMode === "guided") {
+    addMessage(state, "system", `Interpreting /${command} as /${suggestion}.`);
+    return suggestion;
+  }
+
+  return command;
+}
+
+function normalizeSetKey(key: string): string {
+  if (key === "language") return "lang";
+  return key;
+}
+
+function applyModeCommand(state: SessionState, value: string) {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) {
+    addMessage(state, "assistant", `mode=${state.operatorMode}. Use /mode guided or /mode expert.`);
+    return;
+  }
+
+  if (normalized === "guided" || normalized === "expert") {
+    state.operatorMode = normalized;
+    addMessage(state, "assistant", `mode=${state.operatorMode}`);
+    addActivity(state, `Switched mode to ${state.operatorMode}`);
+    return;
+  }
+
+  const suggestion = findClosestTerm(normalized, ["guided", "expert"], 2);
+  if (suggestion) {
+    state.operatorMode = suggestion as OperatorMode;
+    addMessage(state, "assistant", `mode=${state.operatorMode} (auto-corrected)`);
+    addActivity(state, `Switched mode to ${state.operatorMode}`);
+    return;
+  }
+
+  addMessage(state, "assistant", "mode must be guided or expert.");
+}
+
+function showPendingQueue(state: SessionState) {
+  if (!state.pendingApproval || state.pendingApproval.steps.length === 0) {
+    addMessage(state, "assistant", "No pending approvals.");
+    return;
+  }
+
+  const lines = state.pendingApproval.steps
+    .map((step, index) => `${index + 1}. ${step.tool} - ${step.reason}`)
+    .join("\n");
+  addMessage(
+    state,
+    "assistant",
+    `Pending approvals:\n${lines}\nUse /approve <index|next|all> or /deny <index|next|all>.`
+  );
+}
+
+async function hydrateTermUiPrefs(state: SessionState): Promise<void> {
+  try {
+    const prefs = await loadTerminalUserPrefs();
+    if (!prefs) {
+      await persistTermUiPrefs(state, false);
+      return;
+    }
+
+    applyPrefsToTermUiState(state, prefs);
+    addMessage(state, "system", `Loaded saved defaults from ${getTerminalPrefsPath()}`);
+    addActivity(state, "Loaded saved defaults");
+  } catch (error) {
+    addActivity(
+      state,
+      `Could not load saved defaults: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}
+
+function applyPrefsToTermUiState(state: SessionState, prefs: TerminalUserPrefs): void {
+  if (prefs.operatorMode) state.operatorMode = prefs.operatorMode;
+  if (prefs.theme) state.theme = prefs.theme;
+  if (prefs.autonomy === 0 || prefs.autonomy === 1 || prefs.autonomy === 2) {
+    state.autonomy = prefs.autonomy;
+  }
+  if (typeof prefs.dryRun === "boolean") state.dryRun = prefs.dryRun;
+  state.recipient = prefs.recipient || undefined;
+  state.model = prefs.model || undefined;
+
+  const lead = prefs.leadDefaults || {};
+  state.leadDefaults = {
+    name: lead.name || undefined,
+    phone: lead.phone || undefined,
+    city: lead.city || undefined,
+    preferredLanguage: lead.preferredLanguage
+  };
+}
+
+function buildTermUiPrefs(state: SessionState): TerminalUserPrefs {
+  return {
+    version: 1,
+    operatorMode: state.operatorMode,
+    theme: state.theme,
+    autonomy: state.autonomy,
+    dryRun: state.dryRun,
+    recipient: state.recipient,
+    model: state.model,
+    leadDefaults: {
+      name: state.leadDefaults.name,
+      phone: state.leadDefaults.phone,
+      city: state.leadDefaults.city,
+      preferredLanguage: state.leadDefaults.preferredLanguage
+    }
+  };
+}
+
+async function persistTermUiPrefs(state: SessionState, reportErrors = true): Promise<void> {
+  try {
+    await saveTerminalUserPrefs(buildTermUiPrefs(state));
+  } catch (error) {
+    if (!reportErrors) return;
+    addActivity(
+      state,
+      `Could not save defaults: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
 }
 
 function applySetCommand(state: SessionState, value: string) {
   const [keyRaw, ...rest] = value.split(/\s+/);
-  const key = (keyRaw || "").toLowerCase();
+  const inputKey = (keyRaw || "").toLowerCase();
+  const key = normalizeSetKey(inputKey);
   const val = rest.join(" ").trim();
 
   if (!key) {
@@ -482,6 +738,7 @@ function applySetCommand(state: SessionState, value: string) {
       state.autonomy = Number(val) as AutonomyLevel;
       addMessage(state, "assistant", `autonomy=${state.autonomy}`);
       addActivity(state, `Set autonomy to ${state.autonomy}`);
+      void persistTermUiPrefs(state);
       return;
     }
     addMessage(state, "assistant", "autonomy must be 0, 1, or 2.");
@@ -497,6 +754,7 @@ function applySetCommand(state: SessionState, value: string) {
     state.dryRun = parsed;
     addMessage(state, "assistant", `dryRun=${state.dryRun}`);
     addActivity(state, `Set dryRun=${state.dryRun}`);
+    void persistTermUiPrefs(state);
     return;
   }
 
@@ -504,6 +762,7 @@ function applySetCommand(state: SessionState, value: string) {
     state.recipient = val && val.toLowerCase() !== "none" ? val : undefined;
     addMessage(state, "assistant", `recipient=${state.recipient || "none"}`);
     addActivity(state, `Set recipient=${state.recipient || "none"}`);
+    void persistTermUiPrefs(state);
     return;
   }
 
@@ -511,24 +770,28 @@ function applySetCommand(state: SessionState, value: string) {
     state.model = val && val.toLowerCase() !== "none" ? val : undefined;
     addMessage(state, "assistant", `model=${state.model || "default"}`);
     addActivity(state, `Set model=${state.model || "default"}`);
+    void persistTermUiPrefs(state);
     return;
   }
 
   if (key === "name") {
     state.leadDefaults.name = val || undefined;
     addMessage(state, "assistant", `lead.name=${state.leadDefaults.name || "none"}`);
+    void persistTermUiPrefs(state);
     return;
   }
 
   if (key === "phone") {
     state.leadDefaults.phone = val || undefined;
     addMessage(state, "assistant", `lead.phone=${state.leadDefaults.phone || "none"}`);
+    void persistTermUiPrefs(state);
     return;
   }
 
   if (key === "city") {
     state.leadDefaults.city = val || undefined;
     addMessage(state, "assistant", `lead.city=${state.leadDefaults.city || "none"}`);
+    void persistTermUiPrefs(state);
     return;
   }
 
@@ -540,10 +803,65 @@ function applySetCommand(state: SessionState, value: string) {
     }
     state.leadDefaults.preferredLanguage = parsed;
     addMessage(state, "assistant", `lead.preferredLanguage=${parsed || "none"}`);
+    void persistTermUiPrefs(state);
     return;
   }
 
-  addMessage(state, "assistant", `Unknown set key: ${key}`);
+  if (key === "theme") {
+    if (!val) {
+      addMessage(
+        state,
+        "assistant",
+        `theme=${state.theme}. Options: ${listTerminalThemes().map((item) => item.id).join(", ")}`
+      );
+      return;
+    }
+
+    const parsedTheme = parseTerminalThemeId(val);
+    if (parsedTheme) {
+      state.theme = parsedTheme;
+      const theme = getTerminalTheme(parsedTheme);
+      addMessage(state, "assistant", `theme=${theme.id} (${theme.label})`);
+      addActivity(state, `Theme set to ${theme.id}`);
+      void persistTermUiPrefs(state);
+      return;
+    }
+
+    const suggestion = findClosestTerm(val.toLowerCase(), listTerminalThemes().map((item) => item.id), 3);
+    if (suggestion) {
+      state.theme = suggestion as TerminalThemeId;
+      const theme = getTerminalTheme(state.theme);
+      addMessage(state, "assistant", `theme=${theme.id} (${theme.label}) (auto-corrected)`);
+      addActivity(state, `Theme set to ${theme.id}`);
+      void persistTermUiPrefs(state);
+      return;
+    }
+
+    addMessage(
+      state,
+      "assistant",
+      `Unknown theme '${val}'. Options: ${listTerminalThemes().map((item) => item.id).join(", ")}`
+    );
+    return;
+  }
+
+  if (key === "wizard") {
+    addMessage(
+      state,
+      "assistant",
+      "Wizard quick path: /set name <text>, /set phone <text>, /set city <text>, /set lang <en|hi|hinglish>."
+    );
+    return;
+  }
+
+  const suggestion = findClosestTerm(inputKey, SET_KEYS, 2);
+  if (suggestion) {
+    addMessage(state, "assistant", `Unknown set key: ${inputKey}. Applying ${suggestion}.`);
+    applySetCommand(state, `${suggestion} ${val}`.trim());
+    return;
+  }
+
+  addMessage(state, "assistant", `Unknown set key: ${inputKey}`);
 }
 
 async function handleAgentTurn(state: SessionState, message: string) {
@@ -631,13 +949,14 @@ async function handleAgentTurn(state: SessionState, message: string) {
         request,
         steps: approvalSteps
       };
-      const queue = approvalSteps.map((item) => item.tool).join(", ");
+      const lines = approvalSteps.map((item, index) => `${index + 1}. ${item.tool} - ${item.reason}`).join("\n");
       addMessage(
         state,
         "system",
-        `Approval needed for: ${queue}. Run /approve to execute or /deny to skip.`
+        `Approval queue:\n${lines}\nRun /approve <index|next|all> or /deny <index|next|all>. Shortcuts: /a, /d`
       );
-      addActivity(state, `Queued approvals: ${queue}`);
+      addActivity(state, `Queued ${approvalSteps.length} approval step(s)`);
+      setStatus(state, `awaiting ${approvalSteps.length} approval(s)`, "warning");
     }
 
     const note = approvalSteps.length > 0 ? "Some steps are pending explicit approval." : "Plan executed.";
@@ -654,8 +973,8 @@ async function handleAgentTurn(state: SessionState, message: string) {
   }
 }
 
-async function approvePendingSteps(state: SessionState) {
-  if (!state.pendingApproval) {
+async function approvePendingSteps(state: SessionState, targetRaw: string) {
+  if (!state.pendingApproval || state.pendingApproval.steps.length === 0) {
     addMessage(state, "assistant", "No pending steps.");
     return;
   }
@@ -665,15 +984,26 @@ async function approvePendingSteps(state: SessionState) {
     return;
   }
 
+  const selection = parseApprovalSelection(targetRaw, state.pendingApproval.steps.length);
+  if (!selection.ok) {
+    addMessage(state, "assistant", selection.error || "Invalid approval selection.");
+    return;
+  }
+
   state.busy = true;
   setStatus(state, "running approved steps", "info");
 
   try {
     const pending = state.pendingApproval;
-    state.pendingApproval = null;
+    const chosenIndexes = selection.all ? pending.steps.map((_, idx) => idx) : [selection.index];
+    const chosenSet = new Set(chosenIndexes);
+    const selectedSteps = pending.steps.filter((_, idx) => chosenSet.has(idx));
+    const remainingSteps = pending.steps.filter((_, idx) => !chosenSet.has(idx));
+    state.pendingApproval = remainingSteps.length > 0 ? { ...pending, steps: remainingSteps } : null;
+
     const results: ToolExecutionRecord[] = [];
 
-    for (const step of pending.steps) {
+    for (const step of selectedSteps) {
       if (isExternalAction(step.tool, pending.request) && state.autonomy < 2) {
         results.push({
           tool: step.tool,
@@ -692,12 +1022,22 @@ async function approvePendingSteps(state: SessionState) {
     const reply = await buildAssistantReply(
       state,
       pending.request,
-      pending.steps,
+      selectedSteps,
       results,
-      "Approved steps executed."
+      `Approved ${selectedSteps.length} pending step(s).`
     );
     addMessage(state, "assistant", reply);
-    setStatus(state, "approved steps completed", "success");
+
+    if (state.pendingApproval && state.pendingApproval.steps.length > 0) {
+      addMessage(
+        state,
+        "system",
+        `Still pending: ${state.pendingApproval.steps.length} step(s). Use /pending, /a, /d, /approve, or /deny.`
+      );
+      setStatus(state, `awaiting ${state.pendingApproval.steps.length} approval(s)`, "warning");
+    } else {
+      setStatus(state, "approved steps completed", "success");
+    }
   } catch (error) {
     const messageText = error instanceof Error ? error.message : String(error);
     addMessage(state, "assistant", `Approval execution failed: ${messageText}`);
@@ -705,6 +1045,59 @@ async function approvePendingSteps(state: SessionState) {
   } finally {
     state.busy = false;
   }
+}
+
+function denyPendingSteps(state: SessionState, targetRaw: string) {
+  if (!state.pendingApproval || state.pendingApproval.steps.length === 0) {
+    addMessage(state, "assistant", "No pending steps to deny.");
+    return;
+  }
+
+  const selection = parseApprovalSelection(targetRaw, state.pendingApproval.steps.length);
+  if (!selection.ok) {
+    addMessage(state, "assistant", selection.error || "Invalid deny selection.");
+    return;
+  }
+
+  const pending = state.pendingApproval;
+  const chosenIndexes = selection.all ? pending.steps.map((_, idx) => idx) : [selection.index];
+  const chosenSet = new Set(chosenIndexes);
+  const denied = pending.steps.filter((_, idx) => chosenSet.has(idx));
+  const remainingSteps = pending.steps.filter((_, idx) => !chosenSet.has(idx));
+  state.pendingApproval = remainingSteps.length > 0 ? { ...pending, steps: remainingSteps } : null;
+
+  const deniedList = denied.map((step) => step.tool).join(", ");
+  addMessage(state, "assistant", `Denied: ${deniedList}`);
+  addActivity(state, `Denied ${denied.length} pending step(s)`);
+
+  if (state.pendingApproval && state.pendingApproval.steps.length > 0) {
+    setStatus(state, `awaiting ${state.pendingApproval.steps.length} approval(s)`, "warning");
+    addMessage(state, "system", `Still pending: ${state.pendingApproval.steps.length} step(s). Run /pending.`);
+  } else {
+    setStatus(state, "pending steps denied", "warning");
+  }
+}
+
+function parseApprovalSelection(
+  raw: string,
+  total: number
+): { ok: true; all: true } | { ok: true; all: false; index: number } | { ok: false; error: string } {
+  const normalized = raw.trim().toLowerCase();
+  if (!normalized || normalized === "all") {
+    return { ok: true, all: true };
+  }
+  if (normalized === "next") {
+    return { ok: true, all: false, index: 0 };
+  }
+
+  const numeric = Number(normalized);
+  if (!Number.isInteger(numeric)) {
+    return { ok: false, error: "Use index number, next, or all." };
+  }
+  if (numeric < 1 || numeric > total) {
+    return { ok: false, error: `Index out of range. Choose 1-${total}.` };
+  }
+  return { ok: true, all: false, index: numeric - 1 };
 }
 
 function requiresApproval(state: SessionState, request: ChatRequest, tool: ToolName): boolean {
@@ -899,10 +1292,11 @@ function labelForRole(role: MessageRole): string {
   return "you>";
 }
 
-function colorForRole(role: MessageRole): string {
-  if (role === "assistant") return "green";
-  if (role === "system") return "yellow";
-  return "cyan";
+function colorForRole(role: MessageRole, themeId: TerminalThemeId): string {
+  const palette = getTerminalTheme(themeId).tui;
+  if (role === "assistant") return palette.assistantText;
+  if (role === "system") return palette.systemText;
+  return palette.userText;
 }
 
 function parsePreferredLanguage(raw: string): PreferredLanguage | undefined {

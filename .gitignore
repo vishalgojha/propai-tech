@@ -4,3 +4,4 @@ logs
 dist
 .npm-cache
 .local-bin
+*.tsbuildinfo
