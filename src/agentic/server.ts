@@ -16,6 +16,7 @@ import { getConnectorHealthSnapshot } from "./connectors/health.js";
 import { createRateLimiter, type RateLimiter } from "./http-rate-limit.js";
 import { redactPhone } from "./utils/redact.js";
 import { getSuiteSessionManager } from "./suite/session-manager.js";
+import { parseGuidedFlowId } from "./suite/guided-flows.js";
 import { createSuiteExecutionQueue } from "./suite/execution-queue.js";
 import { createGroupPostingService, type GroupPostingService } from "./group-posting/service.js";
 
@@ -600,6 +601,105 @@ async function route(
     return;
   }
 
+  if (method === "GET" && path === "/guided/state") {
+    const auth = authorizeAgentChat(req, runtimeConfig);
+    if (!auth.ok) {
+      sendJson(res, auth.status, { ok: false, error: auth.error });
+      return;
+    }
+
+    const sessionId = getOptionalQueryParam(requestUrl, "sessionId");
+    if (!sessionId) {
+      sendJson(res, 400, { ok: false, error: "sessionId query parameter is required." });
+      return;
+    }
+
+    try {
+      const result = await suiteSessionManager.getGuidedFlow(sessionId);
+      sendJson(res, 200, { ok: true, result });
+    } catch (error) {
+      if (error instanceof Error && error.message === "session_not_found") {
+        sendJson(res, 404, { ok: false, error: "session_not_found" });
+        return;
+      }
+      throw error;
+    }
+    return;
+  }
+
+  if (method === "POST" && path === "/guided/start") {
+    const auth = authorizeAgentChat(req, runtimeConfig);
+    if (!auth.ok) {
+      sendJson(res, auth.status, { ok: false, error: auth.error });
+      return;
+    }
+
+    const body = await parseRequestJson<{ sessionId?: string; flowId?: string }>();
+    const sessionId = typeof body?.sessionId === "string" ? body.sessionId.trim() : "";
+    if (!sessionId) {
+      sendJson(res, 400, { ok: false, error: "sessionId is required." });
+      return;
+    }
+
+    const flowId = parseGuidedFlowId(body?.flowId);
+    if (!flowId) {
+      sendJson(res, 400, { ok: false, error: "flowId must be 'publish_listing'." });
+      return;
+    }
+
+    try {
+      const result = await suiteSessionManager.startGuidedFlow(sessionId, { flowId });
+      sendJson(res, 200, { ok: true, result });
+    } catch (error) {
+      if (error instanceof Error && error.message === "session_not_found") {
+        sendJson(res, 404, { ok: false, error: "session_not_found" });
+        return;
+      }
+      throw error;
+    }
+    return;
+  }
+
+  if (method === "POST" && path === "/guided/answer") {
+    const auth = authorizeAgentChat(req, runtimeConfig);
+    if (!auth.ok) {
+      sendJson(res, auth.status, { ok: false, error: auth.error });
+      return;
+    }
+
+    const body = await parseRequestJson<{ sessionId?: string; stepId?: string; answer?: unknown }>();
+    const sessionId = typeof body?.sessionId === "string" ? body.sessionId.trim() : "";
+    if (!sessionId) {
+      sendJson(res, 400, { ok: false, error: "sessionId is required." });
+      return;
+    }
+
+    const stepId = typeof body?.stepId === "string" ? body.stepId.trim() : "";
+    if (!stepId) {
+      sendJson(res, 400, { ok: false, error: "stepId is required." });
+      return;
+    }
+
+    try {
+      const result = await suiteSessionManager.answerGuidedFlow(sessionId, {
+        stepId,
+        answer: body?.answer
+      });
+      sendJson(res, 200, { ok: true, result });
+    } catch (error) {
+      if (error instanceof Error && error.message === "session_not_found") {
+        sendJson(res, 404, { ok: false, error: "session_not_found" });
+        return;
+      }
+      if (error instanceof Error && error.message.startsWith("guided_")) {
+        sendJson(res, 400, { ok: false, error: error.message });
+        return;
+      }
+      throw error;
+    }
+    return;
+  }
+
   if (method === "POST" && path === "/agent/session/start") {
     const auth = authorizeAgentChat(req, runtimeConfig);
     if (!auth.ok) {
@@ -1024,6 +1124,8 @@ function shouldApplyRateLimit(method: string, path: string): boolean {
     "/agent/run",
     "/agent/chat",
     "/agent/session/start",
+    "/guided/start",
+    "/guided/answer",
     "/wacli/send",
     "/wacli/search",
     "/wacli/chats",

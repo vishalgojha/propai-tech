@@ -38,6 +38,69 @@ export type PlannedToolCall = {
   reason: string;
 };
 
+export type GuidedFlowId = "publish_listing";
+
+export type GuidedStepKind = "text" | "number" | "single_select";
+
+export type GuidedAnswerValue = string | number | boolean | string[];
+
+export type GuidedStepOption = {
+  value: string;
+  label: string;
+};
+
+export type GuidedFlowStepView = {
+  id: string;
+  label: string;
+  prompt: string;
+  kind: GuidedStepKind;
+  required: boolean;
+  placeholder?: string;
+  options?: GuidedStepOption[];
+  answered: boolean;
+  answer?: GuidedAnswerValue;
+  isCurrent: boolean;
+  order: number;
+};
+
+export type GuidedFlowSuggestedExecution = {
+  method: "POST";
+  endpoint: string;
+  payload: ChatRequest & { autonomy: AutonomyLevel };
+};
+
+export type GuidedFlowCompletion = {
+  generatedMessage: string;
+  request: ChatRequest;
+  recommendedPlan: PlannedToolCall[];
+  suggestedExecution: GuidedFlowSuggestedExecution;
+};
+
+export type GuidedFlowProgress = {
+  flowId: GuidedFlowId;
+  status: "active" | "completed";
+  startedAtIso: string;
+  updatedAtIso: string;
+  completedAtIso?: string;
+  currentStepIndex: number;
+  answers: Record<string, GuidedAnswerValue>;
+};
+
+export type GuidedFlowState = {
+  flowId: GuidedFlowId;
+  flowLabel: string;
+  status: "active" | "completed";
+  startedAtIso: string;
+  updatedAtIso: string;
+  completedAtIso?: string;
+  progressPercent: number;
+  currentStepId?: string;
+  currentPrompt?: string;
+  steps: GuidedFlowStepView[];
+  answers: Record<string, GuidedAnswerValue>;
+  completion?: GuidedFlowCompletion;
+};
+
 export type ToolExecutionRecord = {
   tool: ToolName;
   ok: boolean;
@@ -97,6 +160,7 @@ export type AgentSessionSnapshot = {
   updatedAtIso: string;
   turns: number;
   pendingActions: PendingToolActionView[];
+  guidedFlow: GuidedFlowState | null;
   transcript: SessionMessage[];
 };
 

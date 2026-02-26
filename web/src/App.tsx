@@ -77,6 +77,49 @@ interface OnboardingState {
   skipped: boolean;
 }
 
+type GuidedAnswerValue = string | number | boolean | string[];
+type GuidedStepKind = 'text' | 'number' | 'single_select';
+
+interface GuidedStepOption {
+  value: string;
+  label: string;
+}
+
+interface GuidedStepView {
+  id: string;
+  label: string;
+  prompt: string;
+  kind: GuidedStepKind;
+  required: boolean;
+  placeholder?: string;
+  options?: GuidedStepOption[];
+  answered: boolean;
+  answer?: GuidedAnswerValue;
+  isCurrent: boolean;
+  order: number;
+}
+
+interface GuidedFlowCompletion {
+  generatedMessage: string;
+  recommendedPlan: Array<{ tool: string; reason: string }>;
+  suggestedExecution: {
+    method: 'POST';
+    endpoint: string;
+    payload: Record<string, unknown>;
+  };
+}
+
+interface GuidedFlowState {
+  flowId: 'publish_listing';
+  flowLabel: string;
+  status: 'active' | 'completed';
+  progressPercent: number;
+  currentStepId?: string;
+  currentPrompt?: string;
+  steps: GuidedStepView[];
+  completion?: GuidedFlowCompletion;
+}
+
 const STORAGE_KEYS = {
   settings: 'propai.ui.settings.v1',
   operator: 'propai.ui.operator.v1',
@@ -226,6 +269,12 @@ export const App: React.FC = () => {
     { role: 'system', text: 'post_to_99acres tool called → 99A-938472' },
     { role: 'system', text: 'post_to_magicbricks tool called → MB-837462' },
   ]);
+  const [guidedSessionId, setGuidedSessionId] = useState('');
+  const [guidedFlow, setGuidedFlow] = useState<GuidedFlowState | null>(null);
+  const [guidedAnswerInput, setGuidedAnswerInput] = useState('');
+  const [guidedBusy, setGuidedBusy] = useState(false);
+  const [guidedError, setGuidedError] = useState('');
+  const [guidedInfo, setGuidedInfo] = useState('');
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -308,6 +357,33 @@ export const App: React.FC = () => {
     const targetDryRun = SAFETY_MODE_META[safetyMode].dryRun;
     setFormData((prev) => (prev.dryRun === targetDryRun ? prev : { ...prev, dryRun: targetDryRun }));
   }, [safetyMode]);
+
+  useEffect(() => {
+    if (activeScreen !== 'publish-studio') return;
+
+    let cancelled = false;
+    const loadGuided = async () => {
+      try {
+        setGuidedBusy(true);
+        setGuidedError('');
+        const sessionId = await ensureGuidedSession();
+        if (cancelled) return;
+        await refreshGuidedFlow(sessionId);
+      } catch (error) {
+        if (cancelled) return;
+        setGuidedError(error instanceof Error ? error.message : String(error));
+      } finally {
+        if (!cancelled) {
+          setGuidedBusy(false);
+        }
+      }
+    };
+
+    void loadGuided();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeScreen]);
 
   const navItems = [
     { id: 'dashboard' as const, label: 'Dashboard', icon: LayoutDashboard },
@@ -419,8 +495,174 @@ export const App: React.FC = () => {
     setOnboarding({ ...DEFAULT_ONBOARDING_STATE });
   };
 
+  const postJson = async <T,>(endpoint: string, payload: Record<string, unknown>): Promise<T> => {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const body = await response.json().catch(() => ({})) as { error?: string } & T;
+    if (!response.ok) {
+      throw new Error(body.error || `Request failed (${response.status})`);
+    }
+    return body;
+  };
+
+  const getJson = async <T,>(endpoint: string): Promise<T> => {
+    const response = await fetch(endpoint, {
+      method: 'GET',
+      headers: { 'content-type': 'application/json' }
+    });
+    const body = await response.json().catch(() => ({})) as { error?: string } & T;
+    if (!response.ok) {
+      throw new Error(body.error || `Request failed (${response.status})`);
+    }
+    return body;
+  };
+
+  const ensureGuidedSession = async (): Promise<string> => {
+    if (guidedSessionId) return guidedSessionId;
+    const body = await postJson<{ result: { session: { id: string } } }>(
+      '/agent/session/start',
+      {}
+    );
+    const id = body.result.session.id;
+    setGuidedSessionId(id);
+    return id;
+  };
+
+  const refreshGuidedFlow = async (sessionIdOverride?: string) => {
+    const sessionId = sessionIdOverride || guidedSessionId || await ensureGuidedSession();
+    const body = await getJson<{ result: { guidedFlow: GuidedFlowState | null } }>(
+      `/guided/state?sessionId=${encodeURIComponent(sessionId)}`
+    );
+    setGuidedFlow(body.result.guidedFlow);
+    return body.result.guidedFlow;
+  };
+
+  const startGuidedPublishFlow = async () => {
+    setGuidedBusy(true);
+    setGuidedError('');
+    setGuidedInfo('');
+    try {
+      const sessionId = await ensureGuidedSession();
+      const body = await postJson<{ result: { guidedFlow: GuidedFlowState } }>(
+        '/guided/start',
+        {
+          sessionId,
+          flowId: 'publish_listing'
+        }
+      );
+      setGuidedFlow(body.result.guidedFlow);
+      setGuidedAnswerInput('');
+      setGuidedInfo('Guided flow started. Answer one step at a time.');
+    } catch (error) {
+      setGuidedError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setGuidedBusy(false);
+    }
+  };
+
+  const answerGuidedStep = async () => {
+    if (!guidedFlow || guidedFlow.status !== 'active') return;
+    const currentStep = guidedFlow.steps.find((step) => step.isCurrent);
+    if (!currentStep) return;
+
+    if (!guidedAnswerInput.trim()) {
+      setGuidedError(`Please enter a value for "${currentStep.label}".`);
+      return;
+    }
+
+    setGuidedBusy(true);
+    setGuidedError('');
+    setGuidedInfo('');
+    try {
+      const sessionId = guidedSessionId || await ensureGuidedSession();
+      let answerValue: string | number = guidedAnswerInput.trim();
+      if (currentStep.kind === 'number') {
+        const parsed = Number(guidedAnswerInput.trim().replace(/,/g, ''));
+        if (!Number.isFinite(parsed)) {
+          setGuidedError(`"${currentStep.label}" expects a number.`);
+          setGuidedBusy(false);
+          return;
+        }
+        answerValue = parsed;
+      }
+
+      const body = await postJson<{ result: { guidedFlow: GuidedFlowState } }>(
+        '/guided/answer',
+        {
+          sessionId,
+          stepId: currentStep.id,
+          answer: answerValue
+        }
+      );
+      setGuidedFlow(body.result.guidedFlow);
+      setGuidedAnswerInput('');
+      if (body.result.guidedFlow.status === 'completed') {
+        setGuidedInfo('Guided flow completed. Review generated request and send it to agent queue.');
+      } else {
+        setGuidedInfo('Step saved.');
+      }
+    } catch (error) {
+      setGuidedError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setGuidedBusy(false);
+    }
+  };
+
+  const executeGuidedCompletion = async () => {
+    if (!guidedFlow?.completion) return;
+
+    setGuidedBusy(true);
+    setGuidedError('');
+    setGuidedInfo('');
+    try {
+      const execution = guidedFlow.completion.suggestedExecution;
+      const response = await fetch(execution.endpoint, {
+        method: execution.method,
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(execution.payload)
+      });
+      const body = await response.json().catch(() => ({})) as {
+        error?: string;
+        result?: {
+          response?: {
+            plan?: Array<{ tool: string; reason: string }>;
+            queuedActions?: Array<{ tool: string }>;
+          };
+        };
+      };
+
+      if (!response.ok) {
+        throw new Error(body.error || `Request failed (${response.status})`);
+      }
+
+      const plan = body.result?.response?.plan || [];
+      const queuedActions = body.result?.response?.queuedActions || [];
+      const planSummary = plan.length > 0
+        ? `Plan: ${plan.map((item) => item.tool).join(', ')}`
+        : 'No plan returned.';
+      const queuedSummary = queuedActions.length > 0
+        ? `Queued: ${queuedActions.map((item) => item.tool).join(', ')}`
+        : 'Nothing queued.';
+
+      setCurrentAgentSession(prev => [
+        ...prev,
+        { role: 'system', text: `Guided execution sent. ${planSummary} ${queuedSummary}` }
+      ]);
+      setGuidedInfo('Guided request sent to agent session queue.');
+      setActiveScreen('agent-session');
+    } catch (error) {
+      setGuidedError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setGuidedBusy(false);
+    }
+  };
+
   const healthyConnectors = connectors.filter((item) => item.status === 'healthy').length;
   const allConnectorsHealthy = healthyConnectors === connectors.length;
+  const currentGuidedStep = guidedFlow?.steps.find((step) => step.isCurrent);
 
   return (
     <div className="flex h-screen bg-zinc-950 text-white overflow-hidden font-sans">
@@ -707,7 +949,102 @@ export const App: React.FC = () => {
               <div className="grid grid-cols-3 gap-8">
                 {/* Left: Form */}
                 <div className="col-span-2 space-y-6">
+                  <div className="bg-zinc-900 rounded-3xl p-8 space-y-5 border border-zinc-800">
+                    <div className="flex items-center justify-between gap-4">
+                      <div>
+                        <div className="text-xl font-semibold">Guided Publish Sequence</div>
+                        <div className="text-sm text-zinc-400 mt-1">
+                          Step-by-step flow for non-technical operators. No guesswork.
+                        </div>
+                        <div className="text-xs text-zinc-500 mt-2">
+                          Session: {guidedSessionId || 'initializing...'}
+                        </div>
+                      </div>
+                      <button
+                        onClick={startGuidedPublishFlow}
+                        disabled={guidedBusy}
+                        className="px-5 py-3 rounded-3xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 transition-colors"
+                      >
+                        {guidedFlow ? 'Restart Flow' : 'Start Flow'}
+                      </button>
+                    </div>
+
+                    {guidedFlow && (
+                      <div className="space-y-4">
+                        <div className="flex items-center gap-3 text-sm">
+                          <span className={`px-3 py-1 rounded-3xl ${guidedFlow.status === 'completed' ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/15 text-amber-300'}`}>
+                            {guidedFlow.status === 'completed' ? 'Completed' : 'In Progress'}
+                          </span>
+                          <span className="text-zinc-400">
+                            {guidedFlow.progressPercent}% complete
+                          </span>
+                        </div>
+
+                        {guidedFlow.status === 'active' && currentGuidedStep && (
+                          <div className="bg-zinc-800 rounded-2xl p-5 space-y-4">
+                            <div className="text-sm text-zinc-300">
+                              Step {currentGuidedStep.order}: {currentGuidedStep.label}
+                            </div>
+                            <div className="text-zinc-200">{currentGuidedStep.prompt}</div>
+                            {currentGuidedStep.options && currentGuidedStep.options.length > 0 && (
+                              <div className="flex flex-wrap gap-2">
+                                {currentGuidedStep.options.map((option) => (
+                                  <button
+                                    key={option.value}
+                                    onClick={() => setGuidedAnswerInput(option.value)}
+                                    className="px-4 py-2 rounded-3xl border border-zinc-600 hover:border-zinc-300 text-sm transition-colors"
+                                  >
+                                    {option.label}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                            <input
+                              value={guidedAnswerInput}
+                              onChange={(e) => setGuidedAnswerInput(e.target.value)}
+                              placeholder={currentGuidedStep.placeholder || 'Type your answer'}
+                              className="w-full bg-zinc-900 rounded-3xl py-3 px-5 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                            />
+                            <button
+                              onClick={answerGuidedStep}
+                              disabled={guidedBusy}
+                              className="px-5 py-3 rounded-3xl bg-white text-black hover:bg-zinc-200 disabled:opacity-60 transition-colors"
+                            >
+                              Save Step
+                            </button>
+                          </div>
+                        )}
+
+                        {guidedFlow.status === 'completed' && guidedFlow.completion && (
+                          <div className="bg-zinc-800 rounded-2xl p-5 space-y-4">
+                            <div className="text-sm text-zinc-300">Generated request</div>
+                            <div className="text-zinc-100">{guidedFlow.completion.generatedMessage}</div>
+                            <div className="text-sm text-zinc-400">Recommended tools</div>
+                            <div className="flex flex-wrap gap-2">
+                              {guidedFlow.completion.recommendedPlan.map((item) => (
+                                <span key={`${item.tool}-${item.reason}`} className="px-3 py-1 rounded-3xl bg-zinc-700 text-xs text-zinc-200">
+                                  {item.tool}
+                                </span>
+                              ))}
+                            </div>
+                            <button
+                              onClick={executeGuidedCompletion}
+                              disabled={guidedBusy}
+                              className="px-5 py-3 rounded-3xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 transition-colors"
+                            >
+                              Send To Agent Queue
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {guidedInfo && <div className="text-sm text-emerald-300">{guidedInfo}</div>}
+                    {guidedError && <div className="text-sm text-red-300">{guidedError}</div>}
+                  </div>
+
                   <div className="bg-zinc-900 rounded-3xl p-8 space-y-6">
+                    <div className="text-sm uppercase tracking-widest text-zinc-500">Manual Publish Form</div>
                     <div>
                       <label className="block text-sm font-medium mb-3">Listing Title</label>
                       <input 

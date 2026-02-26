@@ -1,6 +1,11 @@
 import { EventEmitter } from "node:events";
 import { generateAssistantText } from "../../llm/chat.js";
 import { evaluateGuardrails } from "./guardrails.js";
+import {
+  answerGuidedFlowProgress,
+  createGuidedFlowProgress,
+  toGuidedFlowState
+} from "./guided-flows.js";
 import { planToolCalls } from "./planner.js";
 import { getToolPolicy, isExternalActionTool, requiresToolApproval } from "./tool-policy.js";
 import { getSuiteStore } from "./store.js";
@@ -21,6 +26,9 @@ import type {
   AgentSessionTurnResponse,
   AutonomyLevel,
   ChatRequest,
+  GuidedFlowId,
+  GuidedFlowProgress,
+  GuidedFlowState,
   PendingToolAction,
   PendingToolActionView,
   PlannedToolCall,
@@ -36,11 +44,21 @@ type AgentSessionRecord = {
   updatedAtIso: string;
   turns: number;
   pendingActions: PendingToolAction[];
+  guidedFlow: GuidedFlowProgress | null;
   transcript: SessionMessage[];
 };
 
 type SessionStartInput = {
   sessionId?: string;
+};
+
+type GuidedStartInput = {
+  flowId: GuidedFlowId;
+};
+
+type GuidedAnswerInput = {
+  stepId: string;
+  answer: unknown;
 };
 
 type ApproveInput = {
@@ -92,6 +110,7 @@ export class RealtorSuiteSessionManager {
         updatedAtIso: nowIso,
         turns: 0,
         pendingActions: [],
+        guidedFlow: null,
         transcript: []
       };
       await this.saveRecord(session);
@@ -119,6 +138,57 @@ export class RealtorSuiteSessionManager {
     return sessions
       .sort((a, b) => Date.parse(b.updatedAtIso) - Date.parse(a.updatedAtIso))
       .map((session) => toSnapshot(session));
+  }
+
+  async startGuidedFlow(
+    sessionId: string,
+    input: GuidedStartInput
+  ): Promise<{ session: AgentSessionSnapshot; guidedFlow: GuidedFlowState }> {
+    const session = await this.requireSession(sessionId);
+    session.guidedFlow = createGuidedFlowProgress(input.flowId);
+    appendTranscript(session, "system", `Started guided flow: ${input.flowId}.`);
+    await this.saveRecord(session);
+
+    return {
+      session: toSnapshot(session),
+      guidedFlow: toGuidedFlowState(session.guidedFlow, session.id)
+    };
+  }
+
+  async getGuidedFlow(
+    sessionId: string
+  ): Promise<{ session: AgentSessionSnapshot; guidedFlow: GuidedFlowState | null }> {
+    const session = await this.requireSession(sessionId);
+    return {
+      session: toSnapshot(session),
+      guidedFlow: session.guidedFlow ? toGuidedFlowState(session.guidedFlow, session.id) : null
+    };
+  }
+
+  async answerGuidedFlow(
+    sessionId: string,
+    input: GuidedAnswerInput
+  ): Promise<{ session: AgentSessionSnapshot; guidedFlow: GuidedFlowState }> {
+    const session = await this.requireSession(sessionId);
+    if (!session.guidedFlow) {
+      throw new Error("guided_flow_not_started");
+    }
+
+    const answerResult = answerGuidedFlowProgress(session.guidedFlow, input.stepId, input.answer);
+    if (!answerResult.ok) {
+      throw new Error(answerResult.error);
+    }
+
+    session.guidedFlow = answerResult.progress;
+    if (session.guidedFlow.status === "completed") {
+      appendTranscript(session, "system", `Completed guided flow: ${session.guidedFlow.flowId}.`);
+    }
+
+    await this.saveRecord(session);
+    return {
+      session: toSnapshot(session),
+      guidedFlow: toGuidedFlowState(session.guidedFlow, session.id)
+    };
   }
 
   onSessionUpdate(
@@ -190,6 +260,40 @@ export class RealtorSuiteSessionManager {
           blockedTools: [],
           pendingActions: toPendingViews(session.pendingActions),
           suggestedNextPrompts: SUGGESTED_PROMPTS_NO_PLAN,
+          skillsPipeline
+        }
+      };
+    }
+
+    if (session.guidedFlow && session.guidedFlow.status === "active") {
+      const guidedState = toGuidedFlowState(session.guidedFlow, session.id);
+      const blockedTools = plan.map((step) => step.tool);
+      const toolResults: ToolExecutionRecord[] = plan.map((step) => ({
+        tool: step.tool,
+        ok: false,
+        risk: getToolPolicy(step.tool).risk,
+        summary: `Blocked: complete guided step '${guidedState.currentStepId || "next"}' before execution.`
+      }));
+
+      const note = `Guided flow active. Complete step ${guidedState.currentStepId || "next"} first.`;
+      const assistantMessage = `Guided flow "${guidedState.flowLabel}" is still in progress. ${guidedState.currentPrompt || "Complete the next step and retry."}`;
+      appendTranscript(session, "assistant", assistantMessage);
+      await this.saveRecord(session);
+      return {
+        session: toSnapshot(session),
+        response: {
+          assistantMessage,
+          note,
+          plan,
+          toolResults,
+          queuedActions: [],
+          blockedTools,
+          pendingActions: toPendingViews(session.pendingActions),
+          suggestedNextPrompts: [
+            "Run guided answer with the current step id",
+            "Check guided flow state and progress",
+            "Execute generated request after guided flow completion"
+          ],
           skillsPipeline
         }
       };
@@ -518,6 +622,7 @@ function toSnapshot(session: AgentSessionRecord): AgentSessionSnapshot {
     updatedAtIso: session.updatedAtIso,
     turns: session.turns,
     pendingActions: toPendingViews(session.pendingActions),
+    guidedFlow: session.guidedFlow ? toGuidedFlowState(session.guidedFlow, session.id) : null,
     transcript: [...session.transcript]
   };
 }

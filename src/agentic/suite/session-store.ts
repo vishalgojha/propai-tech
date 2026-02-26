@@ -1,5 +1,6 @@
 import { Pool } from "pg";
-import type { PendingToolAction, SessionMessage } from "./types.js";
+import { sanitizeGuidedFlowProgress } from "./guided-flows.js";
+import type { GuidedFlowProgress, PendingToolAction, SessionMessage } from "./types.js";
 
 export type AgentSessionStoreRecord = {
   id: string;
@@ -7,6 +8,7 @@ export type AgentSessionStoreRecord = {
   updatedAtIso: string;
   turns: number;
   pendingActions: PendingToolAction[];
+  guidedFlow: GuidedFlowProgress | null;
   transcript: SessionMessage[];
 };
 
@@ -55,9 +57,10 @@ class PostgresSuiteSessionStore implements SuiteSessionStore {
       updated_at: Date;
       turns: number;
       pending_actions: unknown;
+      guided_flow: unknown;
       transcript: unknown;
     }>(
-      `SELECT id, created_at, updated_at, turns, pending_actions, transcript
+      `SELECT id, created_at, updated_at, turns, pending_actions, guided_flow, transcript
        FROM agent_sessions
        WHERE id = $1`,
       [id]
@@ -71,6 +74,7 @@ class PostgresSuiteSessionStore implements SuiteSessionStore {
       updatedAtIso: row.updated_at.toISOString(),
       turns: row.turns,
       pendingActions: parsePendingActions(row.pending_actions),
+      guidedFlow: parseGuidedFlow(row.guided_flow),
       transcript: parseTranscript(row.transcript)
     };
   }
@@ -84,9 +88,10 @@ class PostgresSuiteSessionStore implements SuiteSessionStore {
       updated_at: Date;
       turns: number;
       pending_actions: unknown;
+      guided_flow: unknown;
       transcript: unknown;
     }>(
-      `SELECT id, created_at, updated_at, turns, pending_actions, transcript
+      `SELECT id, created_at, updated_at, turns, pending_actions, guided_flow, transcript
        FROM agent_sessions
        ORDER BY updated_at DESC
        LIMIT $1`,
@@ -99,6 +104,7 @@ class PostgresSuiteSessionStore implements SuiteSessionStore {
       updatedAtIso: row.updated_at.toISOString(),
       turns: row.turns,
       pendingActions: parsePendingActions(row.pending_actions),
+      guidedFlow: parseGuidedFlow(row.guided_flow),
       transcript: parseTranscript(row.transcript)
     }));
   }
@@ -112,13 +118,15 @@ class PostgresSuiteSessionStore implements SuiteSessionStore {
         updated_at,
         turns,
         pending_actions,
+        guided_flow,
         transcript
-      ) VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb)
+      ) VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb)
       ON CONFLICT (id) DO UPDATE
       SET
         updated_at = EXCLUDED.updated_at,
         turns = EXCLUDED.turns,
         pending_actions = EXCLUDED.pending_actions,
+        guided_flow = EXCLUDED.guided_flow,
         transcript = EXCLUDED.transcript`,
       [
         record.id,
@@ -126,6 +134,7 @@ class PostgresSuiteSessionStore implements SuiteSessionStore {
         record.updatedAtIso,
         record.turns,
         JSON.stringify(record.pendingActions),
+        JSON.stringify(record.guidedFlow),
         JSON.stringify(record.transcript)
       ]
     );
@@ -149,9 +158,16 @@ class PostgresSuiteSessionStore implements SuiteSessionStore {
         updated_at TIMESTAMPTZ NOT NULL,
         turns INTEGER NOT NULL DEFAULT 0,
         pending_actions JSONB NOT NULL DEFAULT '[]'::jsonb,
+        guided_flow JSONB NULL,
         transcript JSONB NOT NULL DEFAULT '[]'::jsonb
       )
     `);
+
+    await this.pool.query(`
+      ALTER TABLE agent_sessions
+      ADD COLUMN IF NOT EXISTS guided_flow JSONB NULL
+    `);
+
     this.initialized = true;
   }
 }
@@ -178,6 +194,7 @@ function cloneRecord(record: AgentSessionStoreRecord): AgentSessionStoreRecord {
     updatedAtIso: record.updatedAtIso,
     turns: record.turns,
     pendingActions: JSON.parse(JSON.stringify(record.pendingActions)) as PendingToolAction[],
+    guidedFlow: record.guidedFlow ? (JSON.parse(JSON.stringify(record.guidedFlow)) as GuidedFlowProgress) : null,
     transcript: JSON.parse(JSON.stringify(record.transcript)) as SessionMessage[]
   };
 }
@@ -194,4 +211,8 @@ function parseTranscript(value: unknown): SessionMessage[] {
   return value
     .filter((item) => item && typeof item === "object")
     .map((item) => item as SessionMessage);
+}
+
+function parseGuidedFlow(value: unknown): GuidedFlowProgress | null {
+  return sanitizeGuidedFlowProgress(value);
 }

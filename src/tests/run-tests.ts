@@ -1076,6 +1076,183 @@ const tests: TestCase[] = [
     }
   },
   {
+    name: "/guided flow start/answer/state enforces sequence and returns actionable publish payload",
+    run: async () => {
+      delete process.env.AGENT_API_KEY;
+
+      await withServer(async (baseUrl) => {
+        const start = await fetch(`${baseUrl}/agent/session/start`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({})
+        });
+        assert.equal(start.status, 200);
+        const startPayload = (await start.json()) as {
+          ok: boolean;
+          result: { session: { id: string } };
+        };
+        const sessionId = startPayload.result.session.id;
+
+        const guidedStart = await fetch(`${baseUrl}/guided/start`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            sessionId,
+            flowId: "publish_listing"
+          })
+        });
+        assert.equal(guidedStart.status, 200);
+        const guidedStartPayload = (await guidedStart.json()) as {
+          ok: boolean;
+          result: {
+            guidedFlow: {
+              status: string;
+              currentStepId?: string;
+            };
+          };
+        };
+        assert.equal(guidedStartPayload.ok, true);
+        assert.equal(guidedStartPayload.result.guidedFlow.status, "active");
+        assert.equal(guidedStartPayload.result.guidedFlow.currentStepId, "title");
+
+        const blockedWhileGuided = await fetch(`${baseUrl}/agent/session/${encodeURIComponent(sessionId)}/message`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            message: "Post this listing to 99acres",
+            dryRun: true,
+            autonomy: 2
+          })
+        });
+        assert.equal(blockedWhileGuided.status, 200);
+        const blockedPayload = (await blockedWhileGuided.json()) as {
+          ok: boolean;
+          result: {
+            response: {
+              blockedTools: string[];
+              note?: string;
+            };
+          };
+        };
+        assert.equal(blockedPayload.ok, true);
+        assert.ok(blockedPayload.result.response.blockedTools.includes("post_to_99acres"));
+        assert.match(String(blockedPayload.result.response.note || ""), /guided flow/i);
+
+        const answers: Array<{ stepId: string; answer: unknown }> = [
+          { stepId: "title", answer: "3BHK Sea Facing in Bandra West" },
+          { stepId: "city", answer: "Mumbai" },
+          { stepId: "locality", answer: "Bandra West" },
+          { stepId: "propertyType", answer: "apartment" },
+          { stepId: "transaction", answer: "buy" },
+          { stepId: "bedrooms", answer: 3 },
+          { stepId: "priceInr", answer: 28500000 },
+          { stepId: "portals", answer: "both" }
+        ];
+
+        let finalGuidedFlow: {
+          status: string;
+          currentStepId?: string;
+          completion?: {
+            generatedMessage: string;
+            recommendedPlan: Array<{ tool: string }>;
+            suggestedExecution: {
+              method: string;
+              endpoint: string;
+              payload: Record<string, unknown>;
+            };
+          };
+        } | null = null;
+
+        for (const step of answers) {
+          const response = await fetch(`${baseUrl}/guided/answer`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              sessionId,
+              stepId: step.stepId,
+              answer: step.answer
+            })
+          });
+          assert.equal(response.status, 200);
+          const payload = (await response.json()) as {
+            ok: boolean;
+            result: {
+              guidedFlow: {
+                status: string;
+                currentStepId?: string;
+                completion?: {
+                  generatedMessage: string;
+                  recommendedPlan: Array<{ tool: string }>;
+                  suggestedExecution: {
+                    method: string;
+                    endpoint: string;
+                    payload: Record<string, unknown>;
+                  };
+                };
+              };
+            };
+          };
+          assert.equal(payload.ok, true);
+          finalGuidedFlow = payload.result.guidedFlow;
+        }
+
+        assert.ok(finalGuidedFlow);
+        assert.equal(finalGuidedFlow?.status, "completed");
+        assert.ok(finalGuidedFlow?.completion);
+        assert.match(String(finalGuidedFlow?.completion?.generatedMessage || ""), /99acres/i);
+        assert.match(String(finalGuidedFlow?.completion?.generatedMessage || ""), /MagicBricks/i);
+        assert.ok(
+          (finalGuidedFlow?.completion?.recommendedPlan || []).some((item) => item.tool === "post_to_99acres")
+        );
+        assert.ok(
+          (finalGuidedFlow?.completion?.recommendedPlan || []).some((item) => item.tool === "post_to_magicbricks")
+        );
+
+        const guidedState = await fetch(`${baseUrl}/guided/state?sessionId=${encodeURIComponent(sessionId)}`, {
+          method: "GET"
+        });
+        assert.equal(guidedState.status, 200);
+        const guidedStatePayload = (await guidedState.json()) as {
+          ok: boolean;
+          result: {
+            guidedFlow: {
+              status: string;
+            } | null;
+          };
+        };
+        assert.equal(guidedStatePayload.ok, true);
+        assert.equal(guidedStatePayload.result.guidedFlow?.status, "completed");
+
+        const executionHint = finalGuidedFlow?.completion?.suggestedExecution;
+        assert.ok(executionHint);
+        const execute = await fetch(`${baseUrl}${executionHint?.endpoint || ""}`, {
+          method: executionHint?.method || "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(executionHint?.payload || {})
+        });
+        assert.equal(execute.status, 200);
+        const executePayload = (await execute.json()) as {
+          ok: boolean;
+          result: {
+            response: {
+              plan: Array<{ tool: string }>;
+              queuedActions: Array<{ id: string; tool: string }>;
+              blockedTools: string[];
+            };
+          };
+        };
+        assert.equal(executePayload.ok, true);
+        assert.ok(executePayload.result.response.plan.length >= 1);
+        assert.ok(
+          executePayload.result.response.queuedActions.some((item) =>
+            ["post_to_99acres", "post_to_magicbricks"].includes(item.tool)
+          )
+        );
+        assert.equal(executePayload.result.response.blockedTools.length, 0);
+      });
+    }
+  },
+  {
     name: "/agent/session approve falls back to direct execution when queue enabled without Redis",
     run: async () => {
       const prevQueueEnabled = process.env.PROPAI_QUEUE_ENABLED;

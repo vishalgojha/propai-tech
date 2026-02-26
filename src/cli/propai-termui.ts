@@ -12,6 +12,8 @@ import {
 import { evaluateGuardrails } from "../agentic/suite/guardrails.js";
 import { planToolCalls } from "../agentic/suite/planner.js";
 import { RealtorOrchestrator } from "../agentic/agents/orchestrator.js";
+import { getSuiteSessionManager } from "../agentic/suite/session-manager.js";
+import { parseGuidedFlowId } from "../agentic/suite/guided-flows.js";
 import { generateAssistantText } from "../llm/chat.js";
 import { getOllamaStatus } from "../llm/ollama.js";
 import { isOpenRouterEnabled } from "../llm/openrouter.js";
@@ -35,6 +37,7 @@ import type { PreferredLanguage } from "../agentic/types.js";
 import type { ChatMessage } from "../llm/chat.js";
 import type {
   ChatRequest,
+  GuidedFlowState,
   PlannedToolCall,
   ToolExecutionRecord,
   ToolName
@@ -60,6 +63,8 @@ type LeadDefaults = {
 };
 
 type SessionState = {
+  sessionId: string;
+  guidedFlow: GuidedFlowState | null;
   operatorMode: OperatorMode;
   theme: TerminalThemeId;
   autonomy: AutonomyLevel;
@@ -126,10 +131,12 @@ const DEFAULT_DRY_RUN = process.env.WACLI_DRY_RUN !== "false";
 const LOCAL_WRITE_TOOLS: ToolName[] = ["schedule_site_visit"];
 const EXTERNAL_TOOLS: ToolName[] = ["post_to_99acres", "post_to_magicbricks", "send_whatsapp_followup"];
 const orchestrator = new RealtorOrchestrator();
+const suiteSessionManager = getSuiteSessionManager();
 const COMMANDS = [
   "help",
   "state",
   "llm",
+  "guided",
   "pending",
   "approve",
   "deny",
@@ -149,6 +156,9 @@ const HELP_TEXT = [
   "  /help",
   "  /state",
   "  /llm",
+  "  /guided start publish_listing",
+  "  /guided state",
+  "  /guided answer <value>",
   "  /pending",
   "  /approve",
   "  /approve <index|next|all>",
@@ -230,6 +240,8 @@ function createRootComponent(vue: VueRuntime, ui: ComponentSet): unknown {
     name: "PropAiTermUi",
     setup() {
       const state = reactive<SessionState>({
+        sessionId: "",
+        guidedFlow: null,
         operatorMode: "guided",
         theme: DEFAULT_THEME,
         autonomy: 1,
@@ -251,6 +263,9 @@ function createRootComponent(vue: VueRuntime, ui: ComponentSet): unknown {
       });
 
       const quickCommands = computed(() => [
+        "/guided start publish_listing",
+        "/guided state",
+        "/guided answer <value>",
         "/mode expert",
         "/set theme calm",
         "/state",
@@ -264,6 +279,8 @@ function createRootComponent(vue: VueRuntime, ui: ComponentSet): unknown {
       ]);
 
       const sidebarFacts = computed(() => [
+        `session=${state.sessionId || "booting"}`,
+        `guided=${state.guidedFlow ? `${state.guidedFlow.flowId}:${state.guidedFlow.status}` : "none"}`,
         `mode=${state.operatorMode}`,
         `theme=${state.theme}`,
         `autonomy=${state.autonomy}`,
@@ -290,7 +307,10 @@ function createRootComponent(vue: VueRuntime, ui: ComponentSet): unknown {
         const waMode = state.dryRun ? "wa=simulated" : "wa=live";
         const approvalCount = state.pendingApproval?.steps.length || 0;
         const approvalText = approvalCount > 0 ? `approvals=${approvalCount}` : "approvals=0";
-        return `Mode=${state.operatorMode} | Theme=${state.theme} | A=${state.autonomy} | dryRun=${state.dryRun ? "on" : "off"} | LLM=${state.provider} | ${waMode} | ${approvalText}`;
+        const guidedText = state.guidedFlow
+          ? `guided=${state.guidedFlow.flowId}:${state.guidedFlow.status}`
+          : "guided=none";
+        return `Mode=${state.operatorMode} | Theme=${state.theme} | A=${state.autonomy} | dryRun=${state.dryRun ? "on" : "off"} | LLM=${state.provider} | ${waMode} | ${approvalText} | ${guidedText}`;
       });
 
       const visibleMessages = computed(() => {
@@ -311,6 +331,7 @@ function createRootComponent(vue: VueRuntime, ui: ComponentSet): unknown {
           "PropAI TUI online in guided mode. Type a request in plain English, or run /help for commands."
         );
         addActivity(state, "Session started");
+        void ensureGuidedSession(state);
         void hydrateTermUiPrefs(state);
         pulseTimer = setInterval(() => {
           state.pulse = !state.pulse;
@@ -476,6 +497,15 @@ async function handleSlashCommand(state: SessionState, raw: string) {
       "assistant",
       JSON.stringify(
         {
+          sessionId: state.sessionId || null,
+          guidedFlow: state.guidedFlow
+            ? {
+                flowId: state.guidedFlow.flowId,
+                status: state.guidedFlow.status,
+                currentStepId: state.guidedFlow.currentStepId || null,
+                progressPercent: state.guidedFlow.progressPercent
+              }
+            : null,
           mode: state.operatorMode,
           theme: state.theme,
           autonomy: state.autonomy,
@@ -516,6 +546,20 @@ async function handleSlashCommand(state: SessionState, raw: string) {
     } finally {
       state.busy = false;
     }
+    return;
+  }
+
+  if (command === "guided") {
+    try {
+      await applyGuidedCommand(state, value);
+    } catch (error) {
+      addMessage(
+        state,
+        "assistant",
+        `guided command failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+    void persistTermUiPrefs(state);
     return;
   }
 
@@ -636,6 +680,155 @@ function applyModeCommand(state: SessionState, value: string) {
   }
 
   addMessage(state, "assistant", "mode must be guided or expert.");
+}
+
+async function ensureGuidedSession(state: SessionState): Promise<void> {
+  if (state.sessionId) return;
+  try {
+    const session = await suiteSessionManager.start({});
+    state.sessionId = session.id;
+    state.guidedFlow = session.guidedFlow;
+    addActivity(state, `Session ready: ${state.sessionId}`);
+  } catch (error) {
+    addActivity(state, `Failed to initialize session: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+async function applyGuidedCommand(state: SessionState, value: string): Promise<void> {
+  await ensureGuidedSession(state);
+  if (!state.sessionId) {
+    addMessage(state, "assistant", "Session is not ready yet. Try again.");
+    return;
+  }
+
+  const [subRaw, ...rest] = value.split(/\s+/);
+  const sub = (subRaw || "").trim().toLowerCase();
+  const argText = rest.join(" ").trim();
+
+  if (!sub || sub === "help") {
+    addMessage(
+      state,
+      "assistant",
+      "Usage:\n/guided start publish_listing\n/guided state\n/guided answer <value>"
+    );
+    return;
+  }
+
+  if (sub === "start") {
+    const flowId = parseGuidedFlowId(rest[0]);
+    if (!flowId) {
+      addMessage(state, "assistant", "flowId must be publish_listing.");
+      return;
+    }
+
+    const result = await suiteSessionManager.startGuidedFlow(state.sessionId, { flowId });
+    state.guidedFlow = result.guidedFlow;
+    addMessage(
+      state,
+      "assistant",
+      `guidedFlow=${state.guidedFlow.flowId} status=${state.guidedFlow.status}\nnext: ${state.guidedFlow.currentPrompt || "none"}`
+    );
+    addActivity(state, `Started guided flow ${state.guidedFlow.flowId}`);
+    return;
+  }
+
+  if (sub === "state") {
+    const result = await suiteSessionManager.getGuidedFlow(state.sessionId);
+    state.guidedFlow = result.guidedFlow;
+    if (!state.guidedFlow) {
+      addMessage(state, "assistant", "No guided flow started.");
+      return;
+    }
+
+    addMessage(
+      state,
+      "assistant",
+      JSON.stringify(
+        {
+          flowId: state.guidedFlow.flowId,
+          status: state.guidedFlow.status,
+          progressPercent: state.guidedFlow.progressPercent,
+          currentStepId: state.guidedFlow.currentStepId || null,
+          currentPrompt: state.guidedFlow.currentPrompt || null,
+          completion: state.guidedFlow.completion
+            ? {
+                generatedMessage: state.guidedFlow.completion.generatedMessage,
+                suggestedEndpoint: state.guidedFlow.completion.suggestedExecution.endpoint
+              }
+            : null
+        },
+        null,
+        2
+      )
+    );
+    return;
+  }
+
+  if (sub === "answer") {
+    const result = await suiteSessionManager.getGuidedFlow(state.sessionId);
+    state.guidedFlow = result.guidedFlow;
+    if (!state.guidedFlow) {
+      addMessage(state, "assistant", "No guided flow started. Run /guided start publish_listing");
+      return;
+    }
+    if (state.guidedFlow.status !== "active") {
+      addMessage(state, "assistant", "Guided flow already completed. Run /guided state.");
+      return;
+    }
+
+    const currentStep = state.guidedFlow.steps.find((step) => step.isCurrent);
+    if (!currentStep) {
+      addMessage(state, "assistant", "No active guided step found.");
+      return;
+    }
+
+    if (!argText) {
+      const optionLine =
+        currentStep.options && currentStep.options.length > 0
+          ? `\nOptions: ${currentStep.options.map((item) => item.value).join(", ")}`
+          : "";
+      addMessage(
+        state,
+        "assistant",
+        `Provide answer for '${currentStep.id}'. Prompt: ${currentStep.prompt}${optionLine}`
+      );
+      return;
+    }
+
+    let answerValue: unknown = argText;
+    if (currentStep.kind === "number") {
+      const parsed = Number(argText.replace(/,/g, ""));
+      if (!Number.isFinite(parsed)) {
+        addMessage(state, "assistant", "This step expects a number.");
+        return;
+      }
+      answerValue = parsed;
+    }
+
+    const answered = await suiteSessionManager.answerGuidedFlow(state.sessionId, {
+      stepId: currentStep.id,
+      answer: answerValue
+    });
+    state.guidedFlow = answered.guidedFlow;
+    if (state.guidedFlow.status === "completed") {
+      addMessage(
+        state,
+        "assistant",
+        `Guided flow completed.\nGenerated request: ${state.guidedFlow.completion?.generatedMessage || "n/a"}`
+      );
+      addActivity(state, `Completed guided flow ${state.guidedFlow.flowId}`);
+      return;
+    }
+
+    addMessage(
+      state,
+      "assistant",
+      `saved: ${currentStep.id}\nnext: ${state.guidedFlow.currentPrompt || "n/a"}`
+    );
+    return;
+  }
+
+  addMessage(state, "assistant", "Unknown /guided command. Use: start, state, answer.");
 }
 
 function showPendingQueue(state: SessionState) {
@@ -879,6 +1072,22 @@ async function handleAgentTurn(state: SessionState, message: string) {
         ...state.leadDefaults
       }
     };
+
+    await ensureGuidedSession(state);
+    if (state.sessionId) {
+      const guidedSnapshot = await suiteSessionManager.getGuidedFlow(state.sessionId);
+      state.guidedFlow = guidedSnapshot.guidedFlow;
+      if (state.guidedFlow && state.guidedFlow.status === "active") {
+        addMessage(
+          state,
+          "assistant",
+          `Guided flow is active (${state.guidedFlow.flowLabel}). Complete step '${state.guidedFlow.currentStepId || "next"}' first using /guided answer.`
+        );
+        setStatus(state, "guided flow in progress", "warning");
+        addActivity(state, "Blocked execution due to active guided flow");
+        return;
+      }
+    }
 
     const guardrail = evaluateGuardrails(request);
     if (!guardrail.allow) {

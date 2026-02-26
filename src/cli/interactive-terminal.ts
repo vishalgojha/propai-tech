@@ -5,6 +5,8 @@ import { RealtorOrchestrator } from "../agentic/agents/orchestrator.js";
 import { evaluateGuardrails } from "../agentic/suite/guardrails.js";
 import { planToolCalls } from "../agentic/suite/planner.js";
 import { RealtorSuiteAgentEngine } from "../agentic/suite/engine.js";
+import { getSuiteSessionManager } from "../agentic/suite/session-manager.js";
+import { parseGuidedFlowId } from "../agentic/suite/guided-flows.js";
 import { generateAssistantText } from "../llm/chat.js";
 import { getOllamaStatus } from "../llm/ollama.js";
 import { isOpenRouterEnabled } from "../llm/openrouter.js";
@@ -34,7 +36,7 @@ import {
   runScheduleSiteVisit,
   runSendWhatsappFollowup
 } from "../agentic/suite/toolkit.js";
-import type { ChatRequest, PlannedToolCall, ToolExecutionRecord, ToolName } from "../agentic/suite/types.js";
+import type { ChatRequest, GuidedFlowState, PlannedToolCall, ToolExecutionRecord, ToolName } from "../agentic/suite/types.js";
 import type { LeadInput, PreferredLanguage } from "../agentic/types.js";
 
 type CliRl = ReturnType<typeof createInterface>;
@@ -43,6 +45,8 @@ type OperatorMode = "guided" | "expert";
 type ChatHistoryMessage = { role: "user" | "assistant"; content: string };
 
 type SessionState = {
+  sessionId: string;
+  guidedFlow: GuidedFlowState | null;
   operatorMode: OperatorMode;
   theme: TerminalThemeId;
   autonomy: AutonomyLevel;
@@ -62,7 +66,7 @@ type SessionState = {
 const DEFAULT_DRY_RUN = process.env.WACLI_DRY_RUN !== "false";
 const LOCAL_WRITE_TOOLS: ToolName[] = ["schedule_site_visit"];
 const EXTERNAL_TOOLS: ToolName[] = ["post_to_99acres", "post_to_magicbricks", "send_whatsapp_followup"];
-const COMMANDS = ["help", "state", "llm", "mode", "clear", "set", "exit", "back", "quit"] as const;
+const COMMANDS = ["help", "state", "llm", "guided", "mode", "clear", "set", "exit", "back", "quit"] as const;
 const SET_KEYS = [
   "autonomy",
   "dryrun",
@@ -79,6 +83,7 @@ const SET_KEYS = [
 
 const suiteEngine = new RealtorSuiteAgentEngine();
 const orchestrator = new RealtorOrchestrator();
+const suiteSessionManager = getSuiteSessionManager();
 
 async function main() {
   const rl = createInterface({ input, output });
@@ -129,7 +134,10 @@ async function runClassicMenu(rl: CliRl) {
 }
 
 async function runAgenticSession(rl: CliRl) {
+  const sessionSnapshot = await suiteSessionManager.start({});
   const state: SessionState = {
+    sessionId: sessionSnapshot.id,
+    guidedFlow: sessionSnapshot.guidedFlow,
     operatorMode: "guided",
     theme: DEFAULT_THEME,
     autonomy: 1,
@@ -151,7 +159,7 @@ async function runAgenticSession(rl: CliRl) {
 
   printAgenticHelp();
   // eslint-disable-next-line no-console
-  console.log("Guided mode is ON. Use /mode expert for strict command behavior.");
+  console.log(`Guided mode is ON. Use /mode expert for strict command behavior. session=${state.sessionId}`);
 
   while (true) {
     printStatusStrip(state);
@@ -194,6 +202,17 @@ async function handleSessionCommand(rl: CliRl, state: SessionState, raw: string)
 
   if (cmd === "llm") {
     await printLlmStatus();
+    return false;
+  }
+
+  if (cmd === "guided") {
+    try {
+      await applyGuidedCommand(state, value);
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.log(`guided command failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    await persistSessionPrefs(state);
     return false;
   }
 
@@ -278,6 +297,146 @@ function applyModeCommand(state: SessionState, value: string): void {
 
   // eslint-disable-next-line no-console
   console.log("mode must be guided or expert.");
+}
+
+async function applyGuidedCommand(state: SessionState, value: string): Promise<void> {
+  const [subRaw, ...rest] = value.split(/\s+/);
+  const sub = (subRaw || "").trim().toLowerCase();
+  const argText = rest.join(" ").trim();
+
+  if (!sub || sub === "help") {
+    // eslint-disable-next-line no-console
+    console.log("Usage: /guided <start|state|answer> ...");
+    // eslint-disable-next-line no-console
+    console.log("  /guided start publish_listing");
+    // eslint-disable-next-line no-console
+    console.log("  /guided state");
+    // eslint-disable-next-line no-console
+    console.log("  /guided answer <value>");
+    return;
+  }
+
+  if (sub === "start") {
+    const flowId = parseGuidedFlowId(rest[0]);
+    if (!flowId) {
+      // eslint-disable-next-line no-console
+      console.log("flowId must be publish_listing.");
+      return;
+    }
+
+    const result = await suiteSessionManager.startGuidedFlow(state.sessionId, { flowId });
+    state.guidedFlow = result.guidedFlow;
+    // eslint-disable-next-line no-console
+    console.log(`guidedFlow=${state.guidedFlow.flowId} status=${state.guidedFlow.status}`);
+    if (state.guidedFlow.currentPrompt) {
+      // eslint-disable-next-line no-console
+      console.log(`next: ${state.guidedFlow.currentPrompt}`);
+    }
+    return;
+  }
+
+  if (sub === "state") {
+    const result = await suiteSessionManager.getGuidedFlow(state.sessionId);
+    state.guidedFlow = result.guidedFlow;
+
+    if (!state.guidedFlow) {
+      // eslint-disable-next-line no-console
+      console.log("No guided flow started in this session.");
+      return;
+    }
+
+    // eslint-disable-next-line no-console
+    console.log(
+      JSON.stringify(
+        {
+          flowId: state.guidedFlow.flowId,
+          status: state.guidedFlow.status,
+          progressPercent: state.guidedFlow.progressPercent,
+          currentStepId: state.guidedFlow.currentStepId || null,
+          currentPrompt: state.guidedFlow.currentPrompt || null,
+          completion: state.guidedFlow.completion
+            ? {
+                generatedMessage: state.guidedFlow.completion.generatedMessage,
+                suggestedEndpoint: state.guidedFlow.completion.suggestedExecution.endpoint
+              }
+            : null
+        },
+        null,
+        2
+      )
+    );
+    return;
+  }
+
+  if (sub === "answer") {
+    const result = await suiteSessionManager.getGuidedFlow(state.sessionId);
+    state.guidedFlow = result.guidedFlow;
+    if (!state.guidedFlow) {
+      // eslint-disable-next-line no-console
+      console.log("No guided flow started. Run /guided start publish_listing");
+      return;
+    }
+    if (state.guidedFlow.status !== "active") {
+      // eslint-disable-next-line no-console
+      console.log("Guided flow is already completed. Run /guided state to view generated execution payload.");
+      return;
+    }
+
+    const currentStep = state.guidedFlow.steps.find((step) => step.isCurrent);
+    if (!currentStep) {
+      // eslint-disable-next-line no-console
+      console.log("No active guided step found.");
+      return;
+    }
+
+    const answerRaw = argText;
+    if (!answerRaw) {
+      // eslint-disable-next-line no-console
+      console.log(`Provide answer for step '${currentStep.id}'. Prompt: ${currentStep.prompt}`);
+      if (currentStep.options && currentStep.options.length > 0) {
+        // eslint-disable-next-line no-console
+        console.log(`Options: ${currentStep.options.map((item) => item.value).join(", ")}`);
+      }
+      return;
+    }
+
+    let answerValue: unknown = answerRaw;
+    if (currentStep.kind === "number") {
+      const parsed = Number(answerRaw.replace(/,/g, ""));
+      if (!Number.isFinite(parsed)) {
+        // eslint-disable-next-line no-console
+        console.log("This step expects a number.");
+        return;
+      }
+      answerValue = parsed;
+    }
+
+    const answered = await suiteSessionManager.answerGuidedFlow(state.sessionId, {
+      stepId: currentStep.id,
+      answer: answerValue
+    });
+    state.guidedFlow = answered.guidedFlow;
+    if (state.guidedFlow.status === "completed") {
+      // eslint-disable-next-line no-console
+      console.log("Guided flow completed.");
+      if (state.guidedFlow.completion) {
+        // eslint-disable-next-line no-console
+        console.log(`Generated request: ${state.guidedFlow.completion.generatedMessage}`);
+      }
+      return;
+    }
+
+    // eslint-disable-next-line no-console
+    console.log(`saved: ${currentStep.id}`);
+    if (state.guidedFlow.currentPrompt) {
+      // eslint-disable-next-line no-console
+      console.log(`next: ${state.guidedFlow.currentPrompt}`);
+    }
+    return;
+  }
+
+  // eslint-disable-next-line no-console
+  console.log("Unknown /guided command. Use: start, state, answer");
 }
 
 function applyPrefsToSessionState(state: SessionState, prefs: TerminalUserPrefs): void {
@@ -480,6 +639,19 @@ async function runAgentTurn(rl: CliRl, state: SessionState, message: string): Pr
   if (directMsg) {
     const handled = await runDirectSendCommand(rl, state, message, directMsg);
     if (handled) return;
+  }
+
+  try {
+    const guidedSnapshot = await suiteSessionManager.getGuidedFlow(state.sessionId);
+    state.guidedFlow = guidedSnapshot.guidedFlow;
+    if (state.guidedFlow && state.guidedFlow.status === "active") {
+      const reply = `Guided flow is active (${state.guidedFlow.flowLabel}). Complete step '${state.guidedFlow.currentStepId || "next"}' first via /guided answer.`;
+      printAssistantReply(reply);
+      pushHistory(state, message, reply);
+      return;
+    }
+  } catch {
+    // ignore transient guided session lookup failures
   }
 
   const request: ChatRequest = {
@@ -871,6 +1043,15 @@ function printSessionState(state: SessionState) {
   console.log(
     JSON.stringify(
       {
+        sessionId: state.sessionId,
+        guidedFlow: state.guidedFlow
+          ? {
+              flowId: state.guidedFlow.flowId,
+              status: state.guidedFlow.status,
+              currentStepId: state.guidedFlow.currentStepId || null,
+              progressPercent: state.guidedFlow.progressPercent
+            }
+          : null,
         mode: state.operatorMode,
         theme: state.theme,
         autonomy: state.autonomy,
@@ -890,7 +1071,10 @@ function printSessionState(state: SessionState) {
 function printStatusStrip(state: SessionState) {
   const theme = getTerminalTheme(state.theme);
   const waMode = state.dryRun ? "WA:simulated" : "WA:live";
-  const strip = `[${state.operatorMode.toUpperCase()}] Theme=${theme.id} | A=${state.autonomy} | dryRun=${state.dryRun ? "on" : "off"} | model=${state.model || "default"} | ${waMode}`;
+  const guided = state.guidedFlow
+    ? `guided=${state.guidedFlow.flowId}:${state.guidedFlow.status}`
+    : "guided=none";
+  const strip = `[${state.operatorMode.toUpperCase()}] Theme=${theme.id} | A=${state.autonomy} | dryRun=${state.dryRun ? "on" : "off"} | model=${state.model || "default"} | ${waMode} | ${guided}`;
   // eslint-disable-next-line no-console
   console.log(`\n${colorizeAnsi(strip, theme.ansi.statusCode)}`);
 }
@@ -1241,6 +1425,12 @@ function printAgenticHelp() {
   console.log("  /state");
   // eslint-disable-next-line no-console
   console.log("  /llm");
+  // eslint-disable-next-line no-console
+  console.log("  /guided start publish_listing");
+  // eslint-disable-next-line no-console
+  console.log("  /guided state");
+  // eslint-disable-next-line no-console
+  console.log("  /guided answer <value>");
   // eslint-disable-next-line no-console
   console.log("  /mode <guided|expert>");
   // eslint-disable-next-line no-console
