@@ -5,3 +5,4 @@ dist
 .npm-cache
 .local-bin
 *.tsbuildinfo
+tokens

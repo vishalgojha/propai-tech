@@ -27,7 +27,8 @@
     "web:install": "npm install --prefix web",
     "web:dev": "npm run dev --prefix web",
     "web:build": "npm run build --prefix web",
-    "web:preview": "npm run preview --prefix web"
+    "web:preview": "npm run preview --prefix web",
+    "railway:build": "npm run web:install && npm run web:build && npm run build"
   },
   "dependencies": {
     "@wppconnect-team/wppconnect": "^1.31.0",
@@ -44,5 +45,8 @@
     "node": ">=25 <26",
     "npm": ">=10 <12"
   },
-  "packageManager": "npm@11"
+  "packageManager": "npm@11",
+  "overrides": {
+    "got": "11.8.6"
+  }
 }

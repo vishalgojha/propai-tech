@@ -309,9 +309,19 @@ The Node server serves `web/dist` on `/app` and `/app/*` when build output exist
 
 ## Deploy (Railway)
 
-1. Create new Railway project from this GitHub repo.
-2. Ensure Railway uses project root and detects `railway.json`.
-3. Add these required variables in Railway:
+This repo is preconfigured for Railway via `railway.json`:
+- Build: `npm run railway:build` (installs/builds `web` and compiles backend)
+- Start: `npm run start`
+- Health check: `GET /health`
+
+1. Create or link a Railway project:
+
+```bash
+npx @railway/cli login
+npx @railway/cli init   # or: npx @railway/cli link
+```
+
+2. Add these variables in Railway:
 
 | Variable | Required | Example |
 |---|---|---|
@@ -332,7 +342,7 @@ The Node server serves `web/dist` on `/app` and `/app/*` when build output exist
 | `PROPAI_QUEUE_ENABLED` | Optional | `true` |
 | `REDIS_URL` | If queue enabled | `redis://...` |
 
-4. Optional vars for integrations:
+3. Optional vars for integrations:
 - `PROPAI_LIVE_POST_URL`
 - `PROPAI_LIVE_99ACRES_POST_URL`
 - `PROPAI_LIVE_MAGICBRICKS_POST_URL`
@@ -341,8 +351,13 @@ The Node server serves `web/dist` on `/app` and `/app/*` when build output exist
 - `PROPAI_LIVE_MAX_RETRIES`
 - `PROPAI_LIVE_RETRY_BACKOFF_MS`
 
-5. Deploy.
-6. Verify:
+4. Deploy:
+
+```bash
+npx @railway/cli up
+```
+
+5. Verify:
 - `GET https://<your-railway-domain>/health`
 - Open `https://<your-railway-domain>/app`
 
@@ -701,4 +716,4 @@ Policy envs:
 - `WHATSAPP_WEBHOOK_VERIFY_TOKEN` enables `GET /whatsapp/webhook` challenge verification
 - `WHATSAPP_APP_SECRET` enables `X-Hub-Signature-256` verification on `POST /whatsapp/webhook`
 - `pairing` mode requires `DATABASE_URL` (startup fails fast without it)
-- Runtime config is validated centrally at startup (`validateRuntimeConfigOrThrow`)
+- Runtime config is validated centrally at startup (`loadRuntimeConfigOrThrow`)
