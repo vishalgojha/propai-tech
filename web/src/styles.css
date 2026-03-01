@@ -185,15 +185,15 @@
 @layer components {
   .app-background {
     background:
-      radial-gradient(90rem 50rem at 110% -10%, rgba(16, 185, 129, 0.15), transparent 40%),
-      radial-gradient(60rem 35rem at -10% 120%, rgba(56, 189, 248, 0.14), transparent 45%),
-      linear-gradient(180deg, #f8fafc 0%, #f1f5f9 55%, #e2e8f0 100%);
+      radial-gradient(90rem 50rem at 110% -10%, rgba(16, 185, 129, 0.2), transparent 42%),
+      radial-gradient(60rem 35rem at -10% 120%, rgba(59, 130, 246, 0.16), transparent 48%),
+      linear-gradient(180deg, #09090b 0%, #111827 52%, #0b1220 100%);
   }
 
   .surface-panel {
-    background: rgba(255, 255, 255, 0.88);
-    border: 1px solid rgba(148, 163, 184, 0.24);
-    box-shadow: 0 12px 32px rgba(15, 23, 42, 0.08);
+    background: rgba(15, 23, 42, 0.82);
+    border: 1px solid rgba(71, 85, 105, 0.45);
+    box-shadow: 0 16px 38px rgba(0, 0, 0, 0.4);
     backdrop-filter: blur(7px);
   }
 
