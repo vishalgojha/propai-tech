@@ -22,7 +22,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "25"
           cache: "npm"
           cache-dependency-path: mobile-tool/package-lock.json
 
@@ -40,6 +40,22 @@ jobs:
 
       - name: Sync Capacitor Android
         run: npm run sync --prefix mobile-tool
+
+      - name: Inject Railway URL in Android assets
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const path = 'mobile-tool/android/app/src/main/assets/capacitor.config.json';
+          const data = JSON.parse(fs.readFileSync(path, 'utf8'));
+          const raw = (process.env.PROPAI_RAILWAY_APP_URL || 'https://propai.live/app').trim();
+          const normalized = raw.replace(/\/+$/, '');
+          const url = normalized.endsWith('/app') ? normalized : `${normalized}/app`;
+          data.server = data.server || {};
+          data.server.url = url;
+          data.server.cleartext = url.startsWith('http://');
+          fs.writeFileSync(path, `${JSON.stringify(data, null, 2)}\n`);
+          console.log(`Configured app URL: ${url}`);
+          NODE
 
       - name: Build debug APK
         run: |
