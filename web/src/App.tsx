@@ -436,9 +436,9 @@ export function App() {
 
   const nav: Array<{ id: ModuleScreen; label: string; icon: typeof Gauge }> = [
     { id: "ops", label: "Ops", icon: Gauge },
-    { id: "broadcast", label: "Broadcast", icon: Send },
     { id: "agent", label: "Agent", icon: Bot },
     { id: "queue", label: "Queue", icon: PlayCircle },
+    { id: "broadcast", label: "Broadcast", icon: Send },
     { id: "settings", label: "Settings", icon: Settings2 }
   ];
 
@@ -673,8 +673,8 @@ export function App() {
       <div className="mx-auto max-w-[1440px]">
         <header className="surface-panel fade-rise flex flex-wrap items-center justify-between gap-3 rounded-3xl p-5">
           <div>
-            <h1 className="text-xl font-semibold tracking-tight lg:text-2xl">PropAI Modular Control Plane</h1>
-            <p className="mt-1 text-sm text-slate-600">Ops + Broadcast + Agent + Queue controls with shared auth/config.</p>
+            <h1 className="text-xl font-semibold tracking-tight lg:text-2xl">PropAI Agentic Operations Console</h1>
+            <p className="mt-1 text-sm text-slate-600">Ops-first control plane for sessions, queue runtime, and broadcast execution.</p>
           </div>
           <div className="flex items-center gap-2">
             <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-medium ${health === "healthy" ? "bg-emerald-100 text-emerald-800" : health === "down" ? "bg-rose-100 text-rose-800" : "bg-slate-100 text-slate-700"}`}>
@@ -705,10 +705,10 @@ export function App() {
             <div className="mt-4 rounded-2xl bg-slate-50 p-3 text-sm">
               <p className="text-xs uppercase tracking-wide text-slate-500">Live Snapshot</p>
               <div className="mt-2 space-y-1">
-                <div className="flex justify-between"><span>Opt-in</span><span className="font-semibold text-emerald-700">{consentStats.in}</span></div>
-                <div className="flex justify-between"><span>Opt-out</span><span className="font-semibold text-rose-700">{consentStats.out}</span></div>
-                <div className="flex justify-between"><span>Campaigns</span><span className="font-semibold">{campaignStats.total}</span></div>
-                <div className="flex justify-between"><span>Running</span><span className="font-semibold text-amber-700">{campaignStats.run}</span></div>
+                <div className="flex justify-between"><span>Agent Pending</span><span className="font-semibold text-indigo-700">{pendingActionCount}</span></div>
+                <div className="flex justify-between"><span>Queue Ready</span><span className={`font-semibold ${queueRuntime?.ready ? "text-emerald-700" : "text-rose-700"}`}>{queueRuntime ? String(queueRuntime.ready) : "-"}</span></div>
+                <div className="flex justify-between"><span>Group Queued</span><span className="font-semibold">{groupStatus?.queue.queued ?? "-"}</span></div>
+                <div className="flex justify-between"><span>Campaigns</span><span className="font-semibold text-amber-700">{campaignStats.total}</span></div>
               </div>
             </div>
           </aside>
