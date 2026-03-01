@@ -4,7 +4,7 @@ This is a separate Android wrapper app that opens your deployed Railway frontend
 
 ## Configure Railway URL
 
-Set the Railway app URL before syncing/building:
+Set the Railway app URL before syncing/building (optional if `https://propai.live/app` is fine):
 
 ```powershell
 $env:PROPAI_RAILWAY_APP_URL="https://your-railway-domain.up.railway.app/app"

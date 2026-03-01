@@ -1,7 +1,11 @@
 import type { CapacitorConfig } from '@capacitor/cli';
 
-const defaultRailwayAppUrl = 'https://your-railway-domain.up.railway.app/app';
-const configuredRailwayUrl = (process.env.PROPAI_RAILWAY_APP_URL || defaultRailwayAppUrl).trim();
+const defaultRailwayAppUrl = 'https://propai.live/app';
+const configuredRailwayUrl = (
+  process.env.PROPAI_RAILWAY_APP_URL ||
+  process.env.RAILWAY_APP_URL ||
+  defaultRailwayAppUrl
+).trim();
 const normalizedRailwayUrl = configuredRailwayUrl.replace(/\/+$/, '');
 const railwayAppUrl = normalizedRailwayUrl.endsWith('/app')
   ? normalizedRailwayUrl

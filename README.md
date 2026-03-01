@@ -371,6 +371,7 @@ A dedicated mobile wrapper lives in `mobile-tool/` and opens your Railway fronte
 ```powershell
 $env:PROPAI_RAILWAY_APP_URL="https://<your-railway-domain>.up.railway.app/app"
 ```
+Default without env override is `https://propai.live/app`.
 
 2. Build debug APK:
 

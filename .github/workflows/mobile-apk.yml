@@ -14,7 +14,7 @@ jobs:
   build-debug-apk:
     runs-on: ubuntu-latest
     env:
-      PROPAI_RAILWAY_APP_URL: ${{ vars.PROPAI_RAILWAY_APP_URL || secrets.PROPAI_RAILWAY_APP_URL || 'https://your-railway-domain.up.railway.app/app' }}
+      PROPAI_RAILWAY_APP_URL: ${{ vars.PROPAI_RAILWAY_APP_URL || secrets.PROPAI_RAILWAY_APP_URL || vars.RAILWAY_APP_URL || secrets.RAILWAY_APP_URL || 'https://propai.live/app' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -34,13 +34,6 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
-
-      - name: Validate Railway URL
-        run: |
-          if [[ "$PROPAI_RAILWAY_APP_URL" == *"your-railway-domain"* ]]; then
-            echo "Set repository variable or secret PROPAI_RAILWAY_APP_URL before building APK."
-            exit 1
-          fi
 
       - name: Install mobile dependencies
         run: npm ci --prefix mobile-tool
