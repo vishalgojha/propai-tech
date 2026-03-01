@@ -1,0 +1,62 @@
+name: Mobile APK Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - handoff
+    paths:
+      - "mobile-tool/**"
+      - ".github/workflows/mobile-apk.yml"
+
+jobs:
+  build-debug-apk:
+    runs-on: ubuntu-latest
+    env:
+      PROPAI_RAILWAY_APP_URL: ${{ vars.PROPAI_RAILWAY_APP_URL || secrets.PROPAI_RAILWAY_APP_URL || 'https://your-railway-domain.up.railway.app/app' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: mobile-tool/package-lock.json
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "21"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Validate Railway URL
+        run: |
+          if [[ "$PROPAI_RAILWAY_APP_URL" == *"your-railway-domain"* ]]; then
+            echo "Set repository variable or secret PROPAI_RAILWAY_APP_URL before building APK."
+            exit 1
+          fi
+
+      - name: Install mobile dependencies
+        run: npm ci --prefix mobile-tool
+
+      - name: Sync Capacitor Android
+        run: npm run sync --prefix mobile-tool
+
+      - name: Build debug APK
+        run: |
+          cd mobile-tool/android
+          chmod +x ./gradlew
+          ./gradlew assembleDebug
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: propai-mobile-debug-apk
+          path: mobile-tool/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error

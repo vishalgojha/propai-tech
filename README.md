@@ -362,6 +362,31 @@ npx @railway/cli up
 - `GET https://<your-railway-domain>/health`
 - Open `https://<your-railway-domain>/app`
 
+## Android APK (Separate Tool)
+
+A dedicated mobile wrapper lives in `mobile-tool/` and opens your Railway frontend in a WebView.
+
+1. Set Railway app URL:
+
+```powershell
+$env:PROPAI_RAILWAY_APP_URL="https://<your-railway-domain>.up.railway.app/app"
+```
+
+2. Build debug APK:
+
+```bash
+npm run mobile:install
+npm run mobile:apk:debug
+```
+
+3. APK output:
+- `mobile-tool/android/app/build/outputs/apk/debug/app-debug.apk`
+
+Notes:
+- This is intentionally separate from backend/web deploy.
+- Local build needs Java (`JAVA_HOME`) and Android SDK installed.
+- A CI workflow is included at `.github/workflows/mobile-apk.yml` to generate APK artifacts via GitHub Actions.
+
 ## Agentic API
 
 - `GET /health`

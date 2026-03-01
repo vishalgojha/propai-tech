@@ -1,0 +1,21 @@
+{
+  "name": "propai-mobile-tool",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Separate Android wrapper APK for PropAI Railway frontend",
+  "type": "module",
+  "scripts": {
+    "doctor": "npx cap doctor",
+    "sync": "npx cap sync android",
+    "android:open": "npx cap open android",
+    "apk:debug": "npm run sync && cd android && gradlew.bat assembleDebug",
+    "apk:release": "npm run sync && cd android && gradlew.bat assembleRelease"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.1.0",
+    "@capacitor/core": "^8.1.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.1.0"
+  }
+}

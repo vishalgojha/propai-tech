@@ -28,7 +28,11 @@
     "web:dev": "npm run dev --prefix web",
     "web:build": "npm run build --prefix web",
     "web:preview": "npm run preview --prefix web",
-    "railway:build": "npm run web:install && npm run web:build && npm run build"
+    "railway:build": "npm run web:install && npm run web:build && npm run build",
+    "mobile:install": "npm install --prefix mobile-tool",
+    "mobile:sync": "npm run sync --prefix mobile-tool",
+    "mobile:apk:debug": "npm run apk:debug --prefix mobile-tool",
+    "mobile:apk:release": "npm run apk:release --prefix mobile-tool"
   },
   "dependencies": {
     "@wppconnect-team/wppconnect": "^1.31.0",
