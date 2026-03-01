@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { type ChangeEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
   Bot,
@@ -15,7 +15,9 @@ import {
   ShieldCheck
 } from "lucide-react";
 
-type Screen = "dashboard" | "consents" | "campaign_create" | "campaign_ops" | "intent_lab" | "audit" | "settings";
+type ModuleScreen = "ops" | "broadcast" | "agent" | "queue" | "settings";
+type OpsView = "dashboard" | "consents" | "intent_lab" | "audit";
+type BroadcastView = "campaign_create" | "campaign_ops";
 type AgentRole = "realtor_admin" | "ops";
 type ConsentStatus = "opted_in" | "opted_out";
 type CampaignCategory = "utility" | "marketing";
@@ -23,6 +25,7 @@ type ConsentMode = "required" | "optional" | "disabled";
 type CampaignStatus = "draft" | "scheduled" | "running" | "completed" | "stopped";
 type NoticeTone = "success" | "error" | "info";
 type Severity = "info" | "success" | "warn" | "error";
+type GroupPostStatus = "queued" | "processing" | "sent" | "failed";
 
 type ApiEnvelope<T> = { ok: boolean; result?: T; error?: string };
 type ApiConfig = { baseUrl: string; apiKey: string; role: AgentRole };
@@ -61,6 +64,70 @@ type CampaignForm = {
   reraProjectId: string;
   audienceRaw: string;
 };
+type ConnectorHealthStatus = "healthy" | "degraded" | "unhealthy" | "unconfigured";
+type ConnectorHealthSnapshot = {
+  generatedAtIso: string;
+  connectors: Array<{
+    connector: { id: string; name: string; provider: string; domain: string };
+    status: ConnectorHealthStatus;
+    checks: Array<{ name: string; ok: boolean; detail: string }>;
+  }>;
+};
+type GroupPostQueueItem = {
+  id: string;
+  kind: "listing" | "requirement";
+  priority: "normal" | "high";
+  content: string;
+  status: GroupPostStatus;
+  nextPostAtIso: string;
+  attempts: number;
+  lastError?: string;
+  targets: string[];
+};
+type GroupPostingServiceStatus = {
+  scheduler: {
+    enabled: boolean;
+    running: boolean;
+    intervalMs: number;
+    batchSize: number;
+    defaultTargets: string[];
+  };
+  queue: {
+    queued: number;
+    processing: number;
+    sent: number;
+    failed: number;
+    nextDueAtIso?: string;
+  };
+};
+type QueueRuntimeStatus = {
+  enabled: boolean;
+  ready: boolean;
+  redisConfigured: boolean;
+  queueName: string;
+  attempts: number;
+  backoffMs: number;
+  concurrency: number;
+  timeoutMs: number;
+  reason?: string;
+};
+type PendingActionView = {
+  id: string;
+  tool: string;
+  reason: string;
+  requestMessage: string;
+  createdAtIso: string;
+  risk?: "low" | "medium" | "high";
+};
+type AgentSessionSnapshot = {
+  id: string;
+  createdAtIso: string;
+  updatedAtIso: string;
+  turns: number;
+  pendingActions: PendingActionView[];
+  transcript: Array<{ role: "user" | "assistant" | "system"; content: string; timestampIso: string }>;
+};
+type BulkUploadMode = "append" | "replace";
 
 const STORE = { api: "propai.realtor.ui.api.v1", audit: "propai.realtor.ui.audit.v1" } as const;
 const DATE_FMT = new Intl.DateTimeFormat("en-IN", { dateStyle: "medium", timeStyle: "short" });
@@ -129,9 +196,47 @@ function noticeClass(tone: NoticeTone) {
   if (tone === "error") return "border-rose-200 bg-rose-50 text-rose-900";
   return "border-sky-200 bg-sky-50 text-sky-900";
 }
+function connectorStatusClass(status: ConnectorHealthStatus) {
+  if (status === "healthy") return "bg-emerald-100 text-emerald-800";
+  if (status === "degraded") return "bg-amber-100 text-amber-800";
+  if (status === "unconfigured") return "bg-slate-100 text-slate-700";
+  return "bg-rose-100 text-rose-800";
+}
+function groupStatusClass(status: GroupPostStatus) {
+  if (status === "queued") return "bg-slate-100 text-slate-700";
+  if (status === "processing") return "bg-sky-100 text-sky-800";
+  if (status === "sent") return "bg-emerald-100 text-emerald-800";
+  return "bg-rose-100 text-rose-800";
+}
+function normalizePhoneToken(token: string): string | null {
+  const trimmed = token.trim().replace(/^["']+|["']+$/g, "");
+  if (!trimmed) return null;
+  let compact = trimmed.replace(/[^\d+]/g, "");
+  if (compact.startsWith("00")) compact = `+${compact.slice(2)}`;
+  if (/^\+\d{8,15}$/.test(compact)) return compact;
+  if (/^\d{8,15}$/.test(compact)) return `+${compact}`;
+  return null;
+}
+function parseBulkAudience(raw: string): { phones: string[]; rejected: number } {
+  const tokens = String(raw || "")
+    .replace(/\r/g, "\n")
+    .split(/[\n,;\t, ]+/g)
+    .map((x) => x.trim())
+    .filter(Boolean);
+  const normalized = tokens.map((token) => normalizePhoneToken(token));
+  const phones = Array.from(new Set(normalized.filter((value): value is string => Boolean(value))));
+  return { phones, rejected: Math.max(0, tokens.length - phones.length) };
+}
+function moduleFromHash(): ModuleScreen {
+  if (typeof window === "undefined") return "ops";
+  const match = window.location.hash.match(/^#\/(ops|broadcast|agent|queue|settings)$/);
+  return match ? (match[1] as ModuleScreen) : "ops";
+}
 
 export function App() {
-  const [screen, setScreen] = useState<Screen>("dashboard");
+  const [screen, setScreen] = useState<ModuleScreen>(() => moduleFromHash());
+  const [opsView, setOpsView] = useState<OpsView>("dashboard");
+  const [broadcastView, setBroadcastView] = useState<BroadcastView>("campaign_create");
   const [config, setConfig] = useState<ApiConfig>(() => normalizeConfig(readJson(STORE.api, DEFAULT_CONFIG)));
   const [draftConfig, setDraftConfig] = useState<ApiConfig>(() => normalizeConfig(readJson(STORE.api, DEFAULT_CONFIG)));
   const [busy, setBusy] = useState<Record<string, boolean>>({});
@@ -147,6 +252,9 @@ export function App() {
   const [lookupPhone, setLookupPhone] = useState("");
   const [lookupStatus, setLookupStatus] = useState<string>("");
   const [campaignForm, setCampaignForm] = useState<CampaignForm>(DEFAULT_FORM);
+  const [bulkUploadMode, setBulkUploadMode] = useState<BulkUploadMode>("append");
+  const [bulkUploadSummary, setBulkUploadSummary] = useState("");
+  const [bulkPasteRaw, setBulkPasteRaw] = useState("");
   const [approvedBy, setApprovedBy] = useState("compliance.lead");
   const [approvalNote, setApprovalNote] = useState("");
   const [dryRun, setDryRun] = useState(true);
@@ -155,11 +263,28 @@ export function App() {
   const [intentUseAi, setIntentUseAi] = useState(true);
   const [intentModel, setIntentModel] = useState("");
   const [intentResult, setIntentResult] = useState<IntentResult | null>(null);
+  const [connectorSnapshot, setConnectorSnapshot] = useState<ConnectorHealthSnapshot | null>(null);
+  const [groupStatus, setGroupStatus] = useState<GroupPostingServiceStatus | null>(null);
+  const [groupQueue, setGroupQueue] = useState<GroupPostQueueItem[]>([]);
+  const [groupQueueFilter, setGroupQueueFilter] = useState<"all" | GroupPostStatus>("all");
+  const [queueRuntime, setQueueRuntime] = useState<QueueRuntimeStatus | null>(null);
+  const [agentSessions, setAgentSessions] = useState<AgentSessionSnapshot[]>([]);
+  const [selectedSessionId, setSelectedSessionId] = useState("");
+  const [agentMessage, setAgentMessage] = useState("");
+  const [agentAutonomy, setAgentAutonomy] = useState<0 | 1 | 2>(1);
 
   const selectedCampaign = useMemo(() => campaigns.find((c) => c.id === selectedCampaignId) || null, [campaigns, selectedCampaignId]);
+  const selectedSession = useMemo(() => agentSessions.find((s) => s.id === selectedSessionId) || null, [agentSessions, selectedSessionId]);
   const consentStats = useMemo(() => ({ total: consents.length, in: consents.filter((c) => c.status === "opted_in").length, out: consents.filter((c) => c.status === "opted_out").length }), [consents]);
   const campaignStats = useMemo(() => ({ total: campaigns.length, run: campaigns.filter((c) => c.status === "running").length, draft: campaigns.filter((c) => c.status === "draft").length }), [campaigns]);
   const audiencePreview = useMemo(() => parseAudience(campaignForm.audienceRaw), [campaignForm.audienceRaw]);
+  const connectorStats = useMemo(() => ({
+    total: connectorSnapshot?.connectors.length || 0,
+    healthy: (connectorSnapshot?.connectors || []).filter((item) => item.status === "healthy").length,
+    degraded: (connectorSnapshot?.connectors || []).filter((item) => item.status === "degraded").length,
+    unhealthy: (connectorSnapshot?.connectors || []).filter((item) => item.status === "unhealthy").length
+  }), [connectorSnapshot]);
+  const pendingActionCount = useMemo(() => agentSessions.reduce((sum, session) => sum + session.pendingActions.length, 0), [agentSessions]);
 
   const addAudit = useCallback((action: string, severity: Severity, details: string) => {
     setAudit((prev) => [{ id: uid("evt"), atIso: new Date().toISOString(), action, severity, details }, ...prev].slice(0, 200));
@@ -225,6 +350,31 @@ export function App() {
     const data = await request<{ campaigns: Campaign[] }>("/realtor/campaign/list");
     setCampaigns(data.campaigns);
   }, [request]);
+  const loadConnectorHealth = useCallback(async () => {
+    const data = await request<ConnectorHealthSnapshot>("/connectors/health");
+    setConnectorSnapshot(data);
+  }, [request]);
+  const loadGroupStatus = useCallback(async () => {
+    const data = await request<GroupPostingServiceStatus>("/group-posting/status");
+    setGroupStatus(data);
+  }, [request]);
+  const loadGroupQueue = useCallback(async () => {
+    const q = groupQueueFilter === "all" ? "" : `?status=${groupQueueFilter}`;
+    const data = await request<{ items: GroupPostQueueItem[] }>(`/group-posting/queue${q}`);
+    setGroupQueue(data.items);
+  }, [groupQueueFilter, request]);
+  const loadQueueRuntime = useCallback(async () => {
+    const data = await request<QueueRuntimeStatus>("/ops/queue/status");
+    setQueueRuntime(data);
+  }, [request]);
+  const loadAgentSessions = useCallback(async () => {
+    const data = await request<{ sessions: AgentSessionSnapshot[] }>("/agent/sessions");
+    setAgentSessions(data.sessions);
+  }, [request]);
+  const loadAgentSession = useCallback(async (id: string) => {
+    const data = await request<{ session: AgentSessionSnapshot }>(`/agent/session/${encodeURIComponent(id)}`);
+    setAgentSessions((prev) => [data.session, ...prev.filter((item) => item.id !== id)]);
+  }, [request]);
 
   const refreshAll = useCallback(async () => {
     await withBusy("refresh", async () => {
@@ -234,17 +384,22 @@ export function App() {
           setNotice({ tone: "error", message: "Backend unreachable." });
           return;
         }
+        try {
+          await loadConnectorHealth();
+        } catch {
+          // connector snapshot is optional
+        }
         if (!config.apiKey) {
           setNotice({ tone: "info", message: "Backend healthy. Add AGENT_API_KEY in Settings for protected endpoints." });
           return;
         }
-        await Promise.all([loadConsents(), loadCampaigns()]);
+        await Promise.all([loadConsents(), loadCampaigns(), loadGroupStatus(), loadGroupQueue(), loadQueueRuntime(), loadAgentSessions()]);
         setNotice({ tone: "success", message: "Data synced." });
       } catch (error) {
         fail("refresh", "Refresh failed", error);
       }
     });
-  }, [config.apiKey, fail, loadCampaigns, loadConsents, probeHealth, withBusy]);
+  }, [config.apiKey, fail, loadAgentSessions, loadCampaigns, loadConnectorHealth, loadConsents, loadGroupQueue, loadGroupStatus, loadQueueRuntime, probeHealth, withBusy]);
 
   useEffect(() => {
     writeJson(STORE.audit, audit);
@@ -259,16 +414,31 @@ export function App() {
     else if (!selectedCampaignId || !campaigns.some((c) => c.id === selectedCampaignId)) setSelectedCampaignId(campaigns[0].id);
   }, [campaigns, selectedCampaignId]);
   useEffect(() => {
+    if (!agentSessions.length) setSelectedSessionId("");
+    else if (!selectedSessionId || !agentSessions.some((session) => session.id === selectedSessionId)) setSelectedSessionId(agentSessions[0].id);
+  }, [agentSessions, selectedSessionId]);
+  useEffect(() => {
+    const onHashChange = () => setScreen(moduleFromHash());
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+  useEffect(() => {
+    const target = `#/${screen}`;
+    if (window.location.hash !== target) window.history.replaceState(null, "", target);
+  }, [screen]);
+  useEffect(() => {
+    if (!config.apiKey) return;
+    void loadGroupQueue().catch(() => undefined);
+  }, [config.apiKey, groupQueueFilter, loadGroupQueue]);
+  useEffect(() => {
     void refreshAll();
   }, [refreshAll]);
 
-  const nav: Array<{ id: Screen; label: string; icon: typeof Gauge }> = [
-    { id: "dashboard", label: "Dashboard", icon: Gauge },
-    { id: "consents", label: "Consent Ledger", icon: ShieldCheck },
-    { id: "campaign_create", label: "Campaign Studio", icon: Send },
-    { id: "campaign_ops", label: "Campaign Ops", icon: PlayCircle },
-    { id: "intent_lab", label: "Intent Lab", icon: Bot },
-    { id: "audit", label: "Audit Trail", icon: ScrollText },
+  const nav: Array<{ id: ModuleScreen; label: string; icon: typeof Gauge }> = [
+    { id: "ops", label: "Ops", icon: Gauge },
+    { id: "broadcast", label: "Broadcast", icon: Send },
+    { id: "agent", label: "Agent", icon: Bot },
+    { id: "queue", label: "Queue", icon: PlayCircle },
     { id: "settings", label: "Settings", icon: Settings2 }
   ];
 
@@ -336,7 +506,8 @@ export function App() {
         });
         await loadCampaigns();
         setSelectedCampaignId(data.campaign.id);
-        setScreen("campaign_ops");
+        setScreen("broadcast");
+        setBroadcastView("campaign_ops");
         setNotice({ tone: "success", message: `Campaign ${data.campaign.id} created.` });
       } catch (error) {
         fail("campaign_create", "Create failed", error);
@@ -412,6 +583,86 @@ export function App() {
     setAudit([]);
     setNotice({ tone: "info", message: "Audit cleared." });
   };
+  const applyBulkNumbers = (raw: string, source: string) => {
+    const parsed = parseBulkAudience(raw);
+    if (parsed.phones.length === 0) {
+      setBulkUploadSummary(`No valid numbers found in ${source}.`);
+      setNotice({ tone: "error", message: "No valid numbers found for bulk upload." });
+      return;
+    }
+    const existing = parseAudience(campaignForm.audienceRaw);
+    const audience = bulkUploadMode === "replace" ? parsed.phones : Array.from(new Set([...existing, ...parsed.phones]));
+    setCampaignForm((p) => ({ ...p, audienceRaw: audience.join("\n") }));
+    const summary = `${bulkUploadMode === "replace" ? "Replaced" : "Appended"} ${parsed.phones.length} numbers from ${source}. Rejected ${parsed.rejected}.`;
+    setBulkUploadSummary(summary);
+    setNotice({ tone: "success", message: summary });
+    addAudit("campaign_bulk_upload", "info", summary);
+  };
+  const onBulkFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      applyBulkNumbers(text, file.name);
+    } catch (error) {
+      fail("campaign_bulk_upload", "Upload parse failed", error);
+    } finally {
+      event.target.value = "";
+    }
+  };
+  const sendAgentMessage = async () => {
+    if (!selectedSessionId) return setNotice({ tone: "error", message: "Select a session." });
+    if (!agentMessage.trim()) return setNotice({ tone: "error", message: "Message is required." });
+    await withBusy("agent_message", async () => {
+      try {
+        const data = await request<{ session: AgentSessionSnapshot }>(`/agent/session/${encodeURIComponent(selectedSessionId)}/message`, "POST", {
+          message: agentMessage.trim(),
+          autonomy: agentAutonomy
+        });
+        setAgentMessage("");
+        setAgentSessions((prev) => [data.session, ...prev.filter((item) => item.id !== data.session.id)]);
+        setNotice({ tone: "success", message: "Agent message processed." });
+      } catch (error) {
+        fail("agent_message", "Agent message failed", error);
+      }
+    });
+  };
+  const startAgentSession = async () => {
+    await withBusy("agent_start", async () => {
+      try {
+        const data = await request<{ session: AgentSessionSnapshot }>("/agent/session/start", "POST", {});
+        setAgentSessions((prev) => [data.session, ...prev.filter((item) => item.id !== data.session.id)]);
+        setSelectedSessionId(data.session.id);
+        setNotice({ tone: "success", message: `Session ${data.session.id} started.` });
+      } catch (error) {
+        fail("agent_start", "Start session failed", error);
+      }
+    });
+  };
+  const approveAgentAction = async (actionId?: string) => {
+    if (!selectedSessionId) return setNotice({ tone: "error", message: "Select a session." });
+    await withBusy("agent_approve", async () => {
+      try {
+        await request(`/agent/session/${encodeURIComponent(selectedSessionId)}/approve`, "POST", actionId ? { actionId } : { all: true });
+        await Promise.all([loadAgentSession(selectedSessionId), loadQueueRuntime()]);
+        setNotice({ tone: "success", message: actionId ? "Action approved." : "All actions approved." });
+      } catch (error) {
+        fail("agent_approve", "Approve failed", error);
+      }
+    });
+  };
+  const rejectAgentAction = async (actionId?: string) => {
+    if (!selectedSessionId) return setNotice({ tone: "error", message: "Select a session." });
+    await withBusy("agent_reject", async () => {
+      try {
+        await request(`/agent/session/${encodeURIComponent(selectedSessionId)}/reject`, "POST", actionId ? { actionId } : { all: true });
+        await loadAgentSession(selectedSessionId);
+        setNotice({ tone: "success", message: actionId ? "Action rejected." : "All actions rejected." });
+      } catch (error) {
+        fail("agent_reject", "Reject failed", error);
+      }
+    });
+  };
 
   const progress = selectedCampaign?.audience.length
     ? Math.round((selectedCampaign.progress.processed / selectedCampaign.audience.length) * 100)
@@ -422,8 +673,8 @@ export function App() {
       <div className="mx-auto max-w-[1440px]">
         <header className="surface-panel fade-rise flex flex-wrap items-center justify-between gap-3 rounded-3xl p-5">
           <div>
-            <h1 className="text-xl font-semibold tracking-tight lg:text-2xl">PropAI Realtor Broadcast Control Plane</h1>
-            <p className="mt-1 text-sm text-slate-600">WABA + AI + compliance operations for Indian realtors.</p>
+            <h1 className="text-xl font-semibold tracking-tight lg:text-2xl">PropAI Modular Control Plane</h1>
+            <p className="mt-1 text-sm text-slate-600">Ops + Broadcast + Agent + Queue controls with shared auth/config.</p>
           </div>
           <div className="flex items-center gap-2">
             <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-medium ${health === "healthy" ? "bg-emerald-100 text-emerald-800" : health === "down" ? "bg-rose-100 text-rose-800" : "bg-slate-100 text-slate-700"}`}>
@@ -445,7 +696,7 @@ export function App() {
                 const Icon = item.icon;
                 const active = screen === item.id;
                 return (
-                  <button key={item.id} type="button" onClick={() => setScreen(item.id)} className={`w-full rounded-2xl px-3 py-2 text-left ${active ? "bg-emerald-600 text-white" : "hover:bg-slate-100"}`}>
+                  <button key={item.id} type="button" onClick={() => { setScreen(item.id); if (item.id === "ops") setOpsView("dashboard"); if (item.id === "broadcast") setBroadcastView("campaign_create"); }} className={`w-full rounded-2xl px-3 py-2 text-left ${active ? "bg-emerald-600 text-white" : "hover:bg-slate-100"}`}>
                     <div className="flex items-center gap-2 text-sm font-medium"><Icon className="h-4 w-4" />{item.label}</div>
                   </button>
                 );
@@ -463,13 +714,37 @@ export function App() {
           </aside>
 
           <main className="space-y-4">
-            {screen === "dashboard" && (
+            {screen === "ops" && (
+              <section className="surface-panel rounded-3xl p-3">
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" onClick={() => setOpsView("dashboard")} className={`rounded-xl px-3 py-1.5 text-sm ${opsView === "dashboard" ? "bg-emerald-600 text-white" : "border border-slate-200 bg-white hover:bg-slate-50"}`}>Dashboard</button>
+                  <button type="button" onClick={() => setOpsView("consents")} className={`rounded-xl px-3 py-1.5 text-sm ${opsView === "consents" ? "bg-emerald-600 text-white" : "border border-slate-200 bg-white hover:bg-slate-50"}`}>Consents</button>
+                  <button type="button" onClick={() => setOpsView("intent_lab")} className={`rounded-xl px-3 py-1.5 text-sm ${opsView === "intent_lab" ? "bg-emerald-600 text-white" : "border border-slate-200 bg-white hover:bg-slate-50"}`}>Intent</button>
+                  <button type="button" onClick={() => setOpsView("audit")} className={`rounded-xl px-3 py-1.5 text-sm ${opsView === "audit" ? "bg-emerald-600 text-white" : "border border-slate-200 bg-white hover:bg-slate-50"}`}>Audit</button>
+                </div>
+              </section>
+            )}
+
+            {screen === "broadcast" && (
+              <section className="surface-panel rounded-3xl p-3">
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" onClick={() => setBroadcastView("campaign_create")} className={`rounded-xl px-3 py-1.5 text-sm ${broadcastView === "campaign_create" ? "bg-emerald-600 text-white" : "border border-slate-200 bg-white hover:bg-slate-50"}`}>Campaign Studio</button>
+                  <button type="button" onClick={() => setBroadcastView("campaign_ops")} className={`rounded-xl px-3 py-1.5 text-sm ${broadcastView === "campaign_ops" ? "bg-emerald-600 text-white" : "border border-slate-200 bg-white hover:bg-slate-50"}`}>Campaign Ops</button>
+                </div>
+              </section>
+            )}
+
+            {screen === "ops" && opsView === "dashboard" && (
               <section className="space-y-4">
                 <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                   <div className="surface-panel rounded-3xl p-4"><p className="text-xs uppercase text-slate-500">Consents</p><p className="mt-1 text-2xl font-semibold">{consentStats.total}</p></div>
                   <div className="surface-panel rounded-3xl p-4"><p className="text-xs uppercase text-slate-500">Drafts</p><p className="mt-1 text-2xl font-semibold">{campaignStats.draft}</p></div>
                   <div className="surface-panel rounded-3xl p-4"><p className="text-xs uppercase text-slate-500">Running</p><p className="mt-1 text-2xl font-semibold">{campaignStats.run}</p></div>
-                  <div className="surface-panel rounded-3xl p-4"><p className="text-xs uppercase text-slate-500">Role</p><p className="mt-1 text-lg font-semibold">{config.role}</p></div>
+                  <div className="surface-panel rounded-3xl p-4"><p className="text-xs uppercase text-slate-500">Role</p><p className="mt-1 text-lg font-semibold">{config.role}</p><p className="mt-2 text-xs text-slate-600">Connectors: {connectorStats.healthy}/{connectorStats.total}</p></div>
+                </div>
+                <div className="surface-panel rounded-3xl p-4">
+                  <div className="mb-2 flex items-center justify-between"><h2 className="text-base font-semibold">Connector Health</h2><button type="button" onClick={() => void loadConnectorHealth()} className="rounded-xl border border-slate-200 px-3 py-1.5 text-xs">Refresh</button></div>
+                  <div className="overflow-x-auto"><table className="min-w-full text-sm"><thead><tr className="text-left text-xs uppercase text-slate-500"><th className="pb-2 pr-3">Connector</th><th className="pb-2 pr-3">Status</th><th className="pb-2 pr-3">Provider</th><th className="pb-2 pr-3">Checks</th></tr></thead><tbody className="divide-y divide-slate-100">{(connectorSnapshot?.connectors || []).map((item) => <tr key={item.connector.id}><td className="py-2 pr-3"><div className="font-medium">{item.connector.name}</div><div className="text-xs text-slate-500">{item.connector.domain}</div></td><td className="py-2 pr-3"><span className={`rounded-full px-2 py-0.5 text-xs ${connectorStatusClass(item.status)}`}>{item.status}</span></td><td className="py-2 pr-3">{item.connector.provider}</td><td className="py-2 pr-3">{item.checks.map((check) => check.name).join(", ") || "-"}</td></tr>)}{(!connectorSnapshot || connectorSnapshot.connectors.length === 0) && <tr><td colSpan={4} className="py-6 text-center text-slate-500">No connector snapshot.</td></tr>}</tbody></table></div>
                 </div>
                 <div className="surface-panel rounded-3xl p-4">
                   <h2 className="mb-3 text-base font-semibold">Latest Campaigns</h2>
@@ -486,7 +761,7 @@ export function App() {
               </section>
             )}
 
-            {screen === "consents" && (
+            {screen === "ops" && opsView === "consents" && (
               <section className="space-y-4">
                 <div className="grid gap-4 xl:grid-cols-3">
                   <div className="surface-panel rounded-3xl p-4"><h2 className="text-base font-semibold">Add Consent</h2><input value={addPhone} onChange={(e) => setAddPhone(e.target.value)} placeholder="+919876543210" className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm" /><button type="button" onClick={() => void addConsent()} disabled={Boolean(busy.add)} className="mt-2 inline-flex items-center rounded-xl bg-emerald-600 px-3 py-2 text-sm text-white disabled:opacity-60">{busy.add ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <ShieldCheck className="mr-1 h-4 w-4" />}Add</button></div>
@@ -500,7 +775,7 @@ export function App() {
               </section>
             )}
 
-            {screen === "campaign_create" && (
+            {screen === "broadcast" && broadcastView === "campaign_create" && (
               <section className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
                 <div className="surface-panel rounded-3xl p-4">
                   <h2 className="text-base font-semibold">Create Campaign</h2>
@@ -513,6 +788,13 @@ export function App() {
                     <select value={campaignForm.consentMode} onChange={(e) => setCampaignForm((p) => ({ ...p, consentMode: e.target.value as ConsentMode }))} className="rounded-xl border border-slate-200 px-3 py-2 text-sm"><option value="required">required</option><option value="optional">optional</option><option value="disabled">disabled</option></select>
                   </div>
                   <input value={campaignForm.reraProjectId} onChange={(e) => setCampaignForm((p) => ({ ...p, reraProjectId: e.target.value }))} placeholder="reraProjectId" className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm" />
+                  <div className="mt-2 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                    <div className="mb-2 flex items-center justify-between"><p className="text-sm font-semibold">Bulk Number Upload</p><select value={bulkUploadMode} onChange={(e) => setBulkUploadMode(e.target.value as BulkUploadMode)} className="rounded-xl border border-slate-200 px-2 py-1 text-xs"><option value="append">append</option><option value="replace">replace</option></select></div>
+                    <p className="text-xs text-slate-600">Upload CSV/TXT with numbers. Detected numbers are normalized to E.164 before adding to audience.</p>
+                    <input type="file" accept=".csv,.txt,text/csv,text/plain" onChange={(event) => { void onBulkFileChange(event); }} className="mt-2 block w-full text-sm" />
+                    <textarea value={bulkPasteRaw} onChange={(e) => setBulkPasteRaw(e.target.value)} rows={3} placeholder="Or paste numbers/CSV rows here" className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm" />
+                    <div className="mt-2 flex items-center gap-2"><button type="button" onClick={() => { applyBulkNumbers(bulkPasteRaw, "pasted text"); setBulkPasteRaw(""); }} className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs">Apply Pasted</button>{bulkUploadSummary && <span className="text-xs text-slate-600">{bulkUploadSummary}</span>}</div>
+                  </div>
                   <textarea value={campaignForm.audienceRaw} onChange={(e) => setCampaignForm((p) => ({ ...p, audienceRaw: e.target.value }))} rows={6} placeholder="+919..., +918..." className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm" />
                   <label className="mt-2 inline-flex items-center gap-2 text-sm"><input type="checkbox" checked={campaignForm.requireApproval} onChange={(e) => setCampaignForm((p) => ({ ...p, requireApproval: e.target.checked }))} />requireApproval</label>
                   <div className="mt-3"><button type="button" onClick={() => void createCampaign()} disabled={Boolean(busy.create)} className="inline-flex items-center rounded-xl bg-emerald-600 px-3 py-2 text-sm text-white disabled:opacity-60">{busy.create ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Send className="mr-1 h-4 w-4" />}Create Draft</button></div>
@@ -521,7 +803,7 @@ export function App() {
               </section>
             )}
 
-            {screen === "campaign_ops" && (
+            {screen === "broadcast" && broadcastView === "campaign_ops" && (
               <section className="grid gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
                 <div className="surface-panel rounded-3xl p-4"><div className="mb-2 flex items-center justify-between"><h2 className="text-base font-semibold">Campaigns</h2><button type="button" onClick={() => void loadCampaigns()} className="rounded-xl border border-slate-200 px-2 py-1 text-xs">Refresh</button></div><div className="space-y-2">{campaigns.map((c) => <button key={c.id} type="button" onClick={() => setSelectedCampaignId(c.id)} className={`w-full rounded-xl border px-3 py-2 text-left ${selectedCampaignId === c.id ? "border-emerald-300 bg-emerald-50" : "border-slate-200 bg-white hover:bg-slate-50"}`}><div className="flex items-center justify-between"><span className="truncate text-sm font-medium">{c.name}</span><span className={`rounded-full px-2 py-0.5 text-[11px] ${statusClass(c.status)}`}>{c.status}</span></div><p className="text-xs text-slate-500">{c.id}</p></button>)}{campaigns.length === 0 && <p className="text-sm text-slate-500">No campaigns.</p>}</div></div>
                 <div className="space-y-4">
@@ -532,15 +814,37 @@ export function App() {
               </section>
             )}
 
-            {screen === "intent_lab" && (
+            {screen === "ops" && opsView === "intent_lab" && (
               <section className="grid gap-4 xl:grid-cols-[1fr_0.9fr]">
                 <div className="surface-panel rounded-3xl p-4"><h2 className="text-base font-semibold">Intent Lab</h2><textarea value={intentText} onChange={(e) => setIntentText(e.target.value)} rows={7} placeholder="Send me 2BHK pricing in Whitefield" className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm" /><div className="mt-2 grid gap-2 md:grid-cols-[auto_1fr]"><label className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm"><input type="checkbox" checked={intentUseAi} onChange={(e) => setIntentUseAi(e.target.checked)} />useAi</label><input value={intentModel} onChange={(e) => setIntentModel(e.target.value)} placeholder="model override" className="rounded-xl border border-slate-200 px-3 py-2 text-sm" /></div><button type="button" onClick={() => void classifyIntent()} disabled={Boolean(busy.intent)} className="mt-2 inline-flex items-center rounded-xl bg-emerald-600 px-3 py-2 text-sm text-white disabled:opacity-60">{busy.intent ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <FlaskConical className="mr-1 h-4 w-4" />}Classify</button></div>
                 <div className="surface-panel rounded-3xl p-4"><h3 className="text-base font-semibold">Output</h3>{intentResult ? <div className="mt-2 space-y-2 text-sm"><div className="rounded-xl bg-slate-50 p-3"><p>intent: <span className="font-semibold">{intentResult.intent}</span></p><p>confidence: <span className="font-semibold">{Math.round(intentResult.confidence * 100)}%</span></p><p>route: <span className="font-semibold">{intentResult.route}</span></p><p>provider: <span className="font-semibold">{intentResult.provider}</span></p></div><pre className="max-h-64 overflow-auto rounded-xl bg-slate-900 p-3 text-xs text-emerald-200">{JSON.stringify(intentResult.fields, null, 2)}</pre></div> : <p className="mt-2 text-sm text-slate-500">Run classification to inspect fields.</p>}</div>
               </section>
             )}
 
-            {screen === "audit" && (
+            {screen === "ops" && opsView === "audit" && (
               <section className="surface-panel rounded-3xl p-4"><div className="mb-2 flex items-center justify-between"><h2 className="text-base font-semibold">Audit Timeline</h2><button type="button" onClick={clearAudit} className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs">Clear</button></div><div className="space-y-2">{audit.map((a) => <div key={a.id} className="rounded-xl border border-slate-200 bg-white p-3"><div className="flex items-center justify-between"><p className="text-sm font-medium">{a.action}</p><p className="text-xs text-slate-500">{fmt(a.atIso)}</p></div><p className="mt-1 text-sm text-slate-700">{a.details}</p></div>)}{audit.length === 0 && <p className="text-sm text-slate-500">No events yet.</p>}</div></section>
+            )}
+
+            {screen === "agent" && (
+              <section className="grid gap-4 xl:grid-cols-[340px_minmax(0,1fr)]">
+                <div className="surface-panel rounded-3xl p-4"><div className="mb-2 flex items-center justify-between"><h2 className="text-base font-semibold">Sessions</h2><div className="flex gap-2"><button type="button" onClick={() => void startAgentSession()} disabled={Boolean(busy.agent_start)} className="rounded-xl bg-emerald-600 px-3 py-1.5 text-xs text-white disabled:opacity-60">{busy.agent_start ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Start"}</button><button type="button" onClick={() => void loadAgentSessions()} className="rounded-xl border border-slate-200 px-3 py-1.5 text-xs">Refresh</button></div></div><div className="space-y-2">{agentSessions.map((session) => <button key={session.id} type="button" onClick={() => setSelectedSessionId(session.id)} className={`w-full rounded-xl border px-3 py-2 text-left ${selectedSessionId === session.id ? "border-emerald-300 bg-emerald-50" : "border-slate-200 bg-white hover:bg-slate-50"}`}><div className="flex items-center justify-between"><span className="truncate text-sm font-medium">{session.id}</span><span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px]">{session.pendingActions.length}</span></div><p className="text-xs text-slate-500">{fmt(session.updatedAtIso)}</p></button>)}{agentSessions.length === 0 && <p className="text-sm text-slate-500">No sessions yet.</p>}</div></div>
+                <div className="space-y-4">
+                  <div className="surface-panel rounded-3xl p-4"><h2 className="text-base font-semibold">Session Actions</h2>{selectedSession ? <div className="mt-2 space-y-2"><div className="rounded-xl bg-slate-50 p-3 text-sm"><p className="font-medium">{selectedSession.id}</p><p className="text-xs text-slate-600">turns={selectedSession.turns} pending={selectedSession.pendingActions.length}</p></div><div className="grid gap-2 md:grid-cols-[140px_minmax(0,1fr)_auto]"><select value={agentAutonomy} onChange={(e) => setAgentAutonomy(Number(e.target.value) as 0 | 1 | 2)} className="rounded-xl border border-slate-200 px-2 py-2 text-sm"><option value={0}>autonomy 0</option><option value={1}>autonomy 1</option><option value={2}>autonomy 2</option></select><input value={agentMessage} onChange={(e) => setAgentMessage(e.target.value)} placeholder="Send agent message..." className="rounded-xl border border-slate-200 px-3 py-2 text-sm" /><button type="button" onClick={() => void sendAgentMessage()} disabled={Boolean(busy.agent_message)} className="rounded-xl bg-emerald-600 px-3 py-2 text-sm text-white disabled:opacity-60">{busy.agent_message ? <Loader2 className="h-4 w-4 animate-spin" /> : "Send"}</button></div><div className="flex gap-2"><button type="button" onClick={() => void approveAgentAction()} disabled={!selectedSession.pendingActions.length || Boolean(busy.agent_approve)} className="rounded-xl bg-indigo-600 px-3 py-1.5 text-xs text-white disabled:opacity-60">Approve All</button><button type="button" onClick={() => void rejectAgentAction()} disabled={!selectedSession.pendingActions.length || Boolean(busy.agent_reject)} className="rounded-xl bg-rose-600 px-3 py-1.5 text-xs text-white disabled:opacity-60">Reject All</button><button type="button" onClick={() => void loadAgentSession(selectedSession.id)} className="rounded-xl border border-slate-200 px-3 py-1.5 text-xs">Refresh Session</button></div><div className="space-y-2">{selectedSession.pendingActions.map((action) => <div key={action.id} className="rounded-xl border border-slate-200 bg-white p-2 text-sm"><div className="flex items-center justify-between"><div><p className="font-medium">{action.tool}</p><p className="text-xs text-slate-600">{action.reason}</p></div><div className="flex gap-1"><button type="button" onClick={() => void approveAgentAction(action.id)} disabled={Boolean(busy.agent_approve)} className="rounded-lg bg-emerald-600 px-2 py-1 text-[11px] text-white disabled:opacity-60">Approve</button><button type="button" onClick={() => void rejectAgentAction(action.id)} disabled={Boolean(busy.agent_reject)} className="rounded-lg bg-rose-600 px-2 py-1 text-[11px] text-white disabled:opacity-60">Reject</button></div></div></div>)}{selectedSession.pendingActions.length === 0 && <p className="text-sm text-slate-500">No pending actions.</p>}</div></div> : <p className="mt-2 text-sm text-slate-500">Select a session to continue.</p>}</div>
+                  <div className="surface-panel rounded-3xl p-4"><h3 className="text-base font-semibold">Transcript</h3>{selectedSession ? <div className="mt-2 max-h-[360px] space-y-2 overflow-auto">{selectedSession.transcript.map((item, idx) => <div key={`${item.timestampIso}-${idx}`} className="rounded-xl bg-slate-50 p-2 text-sm"><div className="flex items-center justify-between"><span className="font-medium">{item.role}</span><span className="text-xs text-slate-500">{fmt(item.timestampIso)}</span></div><p className="mt-1 whitespace-pre-wrap text-slate-700">{item.content}</p></div>)}{selectedSession.transcript.length === 0 && <p className="text-sm text-slate-500">No transcript yet.</p>}</div> : <p className="mt-2 text-sm text-slate-500">No selected session.</p>}</div>
+                </div>
+              </section>
+            )}
+
+            {screen === "queue" && (
+              <section className="space-y-4">
+                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                  <div className="surface-panel rounded-3xl p-4"><p className="text-xs uppercase text-slate-500">Queue Enabled</p><p className="mt-1 text-2xl font-semibold">{queueRuntime ? String(queueRuntime.enabled) : "-"}</p></div>
+                  <div className="surface-panel rounded-3xl p-4"><p className="text-xs uppercase text-slate-500">Queue Ready</p><p className="mt-1 text-2xl font-semibold">{queueRuntime ? String(queueRuntime.ready) : "-"}</p></div>
+                  <div className="surface-panel rounded-3xl p-4"><p className="text-xs uppercase text-slate-500">Group Queued</p><p className="mt-1 text-2xl font-semibold">{groupStatus ? groupStatus.queue.queued : "-"}</p></div>
+                  <div className="surface-panel rounded-3xl p-4"><p className="text-xs uppercase text-slate-500">Agent Pending</p><p className="mt-1 text-2xl font-semibold">{pendingActionCount}</p></div>
+                </div>
+                <div className="surface-panel rounded-3xl p-4"><div className="mb-2 flex flex-wrap items-center justify-between gap-2"><h2 className="text-base font-semibold">Queue Runtime + Group Queue</h2><div className="flex gap-2"><select value={groupQueueFilter} onChange={(e) => setGroupQueueFilter(e.target.value as "all" | GroupPostStatus)} className="rounded-xl border border-slate-200 px-2 py-1.5 text-sm"><option value="all">all</option><option value="queued">queued</option><option value="processing">processing</option><option value="sent">sent</option><option value="failed">failed</option></select><button type="button" onClick={() => void Promise.all([loadQueueRuntime(), loadGroupStatus(), loadGroupQueue()])} className="rounded-xl border border-slate-200 px-3 py-1.5 text-sm">Refresh</button></div></div><div className="grid gap-4 xl:grid-cols-2"><div className="rounded-xl bg-slate-50 p-3 text-sm">{queueRuntime ? <div className="space-y-1"><p>queueName: <span className="font-semibold">{queueRuntime.queueName}</span></p><p>attempts: <span className="font-semibold">{queueRuntime.attempts}</span></p><p>concurrency: <span className="font-semibold">{queueRuntime.concurrency}</span></p><p>timeoutMs: <span className="font-semibold">{queueRuntime.timeoutMs}</span></p><p>reason: <span className="font-semibold">{queueRuntime.reason || "-"}</span></p></div> : <p className="text-slate-500">No runtime data.</p>}</div><div className="rounded-xl bg-slate-50 p-3 text-sm">{groupStatus ? <div className="space-y-1"><p>schedulerEnabled: <span className="font-semibold">{String(groupStatus.scheduler.enabled)}</span></p><p>running: <span className="font-semibold">{String(groupStatus.scheduler.running)}</span></p><p>intervalMs: <span className="font-semibold">{groupStatus.scheduler.intervalMs}</span></p><p>batchSize: <span className="font-semibold">{groupStatus.scheduler.batchSize}</span></p><p>nextDue: <span className="font-semibold">{fmt(groupStatus.queue.nextDueAtIso)}</span></p></div> : <p className="text-slate-500">No group status.</p>}</div></div><div className="mt-3 overflow-x-auto"><table className="min-w-full text-sm"><thead><tr className="text-left text-xs uppercase text-slate-500"><th className="pb-2 pr-3">Item</th><th className="pb-2 pr-3">Status</th><th className="pb-2 pr-3">Next</th><th className="pb-2 pr-3">Attempts</th><th className="pb-2 pr-3">Targets</th></tr></thead><tbody className="divide-y divide-slate-100">{groupQueue.map((item) => <tr key={item.id}><td className="py-2 pr-3"><div className="font-medium">{item.id}</div><div className="line-clamp-2 text-xs text-slate-500">{item.content}</div></td><td className="py-2 pr-3"><span className={`rounded-full px-2 py-0.5 text-xs ${groupStatusClass(item.status)}`}>{item.status}</span></td><td className="py-2 pr-3 text-slate-600">{fmt(item.nextPostAtIso)}</td><td className="py-2 pr-3">{item.attempts}</td><td className="py-2 pr-3 text-slate-600">{item.targets.length}</td></tr>)}{groupQueue.length === 0 && <tr><td colSpan={5} className="py-6 text-center text-slate-500">No queue items.</td></tr>}</tbody></table></div></div>
+              </section>
             )}
 
             {screen === "settings" && (
