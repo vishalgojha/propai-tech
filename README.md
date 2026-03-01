@@ -189,6 +189,7 @@ Mode split:
 
 - `propai chat` = terminal agent mode.
 - `npm run dev` = API/Web mode (`http://localhost:8080/app`).
+- `quick-launch.bat web [port]` = Windows helper that auto-frees the port, starts API in a new window, and opens `/app`.
 - If TUI deps are missing, `propai chat` auto-falls back to classic terminal.
 
 TUI capabilities:
