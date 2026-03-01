@@ -1,1604 +1,559 @@
-import React, { useEffect, useState } from 'react';
-import { 
-  LayoutDashboard, PenTool, CheckCircle, Activity, MessageCircle, 
-  UserCheck, Bot, Send, List, Play, Settings, HeartPulse, Database, 
-  Server, Zap, Clock, Users, AlertTriangle, RefreshCw, Plus, Trash2 
-} from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  AlertCircle,
+  Bot,
+  CheckCircle2,
+  FileCheck2,
+  FlaskConical,
+  Gauge,
+  Loader2,
+  PlayCircle,
+  RefreshCcw,
+  ScrollText,
+  Send,
+  Settings2,
+  ShieldCheck
+} from "lucide-react";
 
-type Screen = 
-  | 'dashboard' 
-  | 'publish-studio' 
-  | 'publish-results' 
-  | 'portal-status' 
-  | 'whatsapp-connect' 
-  | 'pairing-approval' 
-  | 'approvals-queue' 
-  | 'agent-session' 
-  | 'session-list' 
-  | 'group-intake' 
-  | 'group-queue' 
-  | 'dispatch-center' 
-  | 'connectors-center' 
-  | 'wacli-tools' 
-  | 'queue-runtime' 
-  | 'properties' 
-  | 'system-health' 
-  | 'settings';
+type Screen = "dashboard" | "consents" | "campaign_create" | "campaign_ops" | "intent_lab" | "audit" | "settings";
+type AgentRole = "realtor_admin" | "ops";
+type ConsentStatus = "opted_in" | "opted_out";
+type CampaignCategory = "utility" | "marketing";
+type ConsentMode = "required" | "optional" | "disabled";
+type CampaignStatus = "draft" | "scheduled" | "running" | "completed" | "stopped";
+type NoticeTone = "success" | "error" | "info";
+type Severity = "info" | "success" | "warn" | "error";
 
-interface PublishResult {
-  id: string;
-  date: string;
-  listingTitle: string;
-  portal: '99acres' | 'MagicBricks' | 'Both';
-  externalId: string;
-  status: 'success' | 'failed';
-  reason?: string;
-}
-
-interface Connector {
+type ApiEnvelope<T> = { ok: boolean; result?: T; error?: string };
+type ApiConfig = { baseUrl: string; apiKey: string; role: AgentRole };
+type ConsentRecord = { phoneE164: string; status: ConsentStatus; source: string; purpose: string; updatedAtIso: string };
+type Campaign = {
   id: string;
   name: string;
-  status: 'healthy' | 'warning' | 'error';
-  lastPing: string;
-  special?: boolean;
-}
-
-interface QueueItem {
-  id: string;
-  kind: string;
-  priority: 'high' | 'medium' | 'low';
-  content: string;
-  targets: string;
-  status: 'queued' | 'processing' | 'sent' | 'failed';
-  scheduled: string;
-}
-
-interface SettingsForm {
-  businessPricePrefix: string;
-  openrouterApiKey: string;
-  openrouterModel: string;
-  xaiApiKey: string;
-  xaiModel: string;
-}
-
-type SafetyMode = 'preview' | 'guided_live' | 'autopilot';
-type OperatorLanguage = 'en' | 'hi' | 'hinglish';
-
-interface OperatorProfile {
+  client: string;
+  createdAtIso: string;
+  status: CampaignStatus;
+  template: { name: string; language: string; category: CampaignCategory };
+  compliance: { consentMode: ConsentMode; requireApproval: boolean; approvedBy?: string; reraProjectId?: string };
+  audience: string[];
+  progress: { processed: number; sent: number; optedOut: number; blockedByPolicy: number };
+  lastPolicyCheck?: { atIso: string; ok: boolean; reasons: string[]; warnings: string[] };
+  lastRunAtIso?: string;
+};
+type RunRecipient = { phone: string; action: "sent" | "opted_out" | "blocked"; reason?: string };
+type IntentResult = {
+  intent: "site_visit" | "price_sheet" | "loan_help" | "callback" | "brochure_request" | "not_interested" | "stop" | "general_query";
+  confidence: number;
+  route: string;
+  fields: Record<string, unknown>;
+  provider: "heuristic" | "ai" | "heuristic_fallback";
+};
+type Notice = { tone: NoticeTone; message: string };
+type Audit = { id: string; atIso: string; action: string; severity: Severity; details: string };
+type CampaignForm = {
   name: string;
-  phone: string;
-  city: string;
-  lang: OperatorLanguage;
-}
-
-interface OnboardingState {
-  step: 1 | 2 | 3;
-  completed: boolean;
-  skipped: boolean;
-}
-
-type GuidedAnswerValue = string | number | boolean | string[];
-type GuidedStepKind = 'text' | 'number' | 'single_select';
-
-interface GuidedStepOption {
-  value: string;
-  label: string;
-}
-
-interface GuidedStepView {
-  id: string;
-  label: string;
-  prompt: string;
-  kind: GuidedStepKind;
-  required: boolean;
-  placeholder?: string;
-  options?: GuidedStepOption[];
-  answered: boolean;
-  answer?: GuidedAnswerValue;
-  isCurrent: boolean;
-  order: number;
-}
-
-interface GuidedFlowCompletion {
-  generatedMessage: string;
-  recommendedPlan: Array<{ tool: string; reason: string }>;
-  suggestedExecution: {
-    method: 'POST';
-    endpoint: string;
-    payload: Record<string, unknown>;
-  };
-}
-
-interface GuidedFlowState {
-  flowId: 'publish_listing';
-  flowLabel: string;
-  status: 'active' | 'completed';
-  progressPercent: number;
-  currentStepId?: string;
-  currentPrompt?: string;
-  steps: GuidedStepView[];
-  completion?: GuidedFlowCompletion;
-}
-
-const STORAGE_KEYS = {
-  settings: 'propai.ui.settings.v1',
-  operator: 'propai.ui.operator.v1',
-  onboarding: 'propai.ui.onboarding.v1',
-  safetyMode: 'propai.ui.safety_mode.v1',
-} as const;
-
-const DEFAULT_SETTINGS_FORM: SettingsForm = {
-  businessPricePrefix: 'Cr',
-  openrouterApiKey: '',
-  openrouterModel: 'openai/gpt-4o-mini',
-  xaiApiKey: '',
-  xaiModel: 'grok-2-latest'
+  client: string;
+  templateName: string;
+  language: string;
+  category: CampaignCategory;
+  consentMode: ConsentMode;
+  requireApproval: boolean;
+  reraProjectId: string;
+  audienceRaw: string;
 };
 
-const DEFAULT_OPERATOR_PROFILE: OperatorProfile = {
-  name: '',
-  phone: '',
-  city: '',
-  lang: 'en'
+const STORE = { api: "propai.realtor.ui.api.v1", audit: "propai.realtor.ui.audit.v1" } as const;
+const DATE_FMT = new Intl.DateTimeFormat("en-IN", { dateStyle: "medium", timeStyle: "short" });
+const DEFAULT_CONFIG: ApiConfig = {
+  baseUrl: typeof window === "undefined" ? "http://localhost:3000" : window.location.origin,
+  apiKey: "",
+  role: "realtor_admin"
+};
+const DEFAULT_FORM: CampaignForm = {
+  name: "",
+  client: "default",
+  templateName: "",
+  language: "en",
+  category: "marketing",
+  consentMode: "required",
+  requireApproval: true,
+  reraProjectId: "",
+  audienceRaw: ""
 };
 
-const DEFAULT_ONBOARDING_STATE: OnboardingState = {
-  step: 1,
-  completed: false,
-  skipped: false
-};
-
-const SAFETY_MODE_META: Record<SafetyMode, {
-  label: string;
-  subtitle: string;
-  dryRun: boolean;
-  autonomy: 0 | 1 | 2;
-}> = {
-  preview: {
-    label: 'Preview Only',
-    subtitle: 'No real sends. Best for practice.',
-    dryRun: true,
-    autonomy: 0
-  },
-  guided_live: {
-    label: 'Guided Live',
-    subtitle: 'Real actions with approvals in control.',
-    dryRun: false,
-    autonomy: 1
-  },
-  autopilot: {
-    label: 'Autopilot',
-    subtitle: 'Fewer pauses for power operators.',
-    dryRun: false,
-    autonomy: 2
+function readJson<T>(key: string, fallback: T): T {
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : fallback;
+  } catch {
+    return fallback;
   }
-};
+}
+function writeJson<T>(key: string, value: T) {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // ignore
+  }
+}
+function normalizeConfig(value: Partial<ApiConfig> | null | undefined): ApiConfig {
+  const baseUrl = String(value?.baseUrl || DEFAULT_CONFIG.baseUrl).trim().replace(/\/+$/, "");
+  return { baseUrl: baseUrl || DEFAULT_CONFIG.baseUrl, apiKey: String(value?.apiKey || "").trim(), role: value?.role === "ops" ? "ops" : "realtor_admin" };
+}
+function fmt(iso?: string) {
+  if (!iso) return "-";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : DATE_FMT.format(d);
+}
+function uid(prefix: string) {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+function parseAudience(raw: string) {
+  return Array.from(
+    new Set(
+      String(raw || "")
+        .split(/[\n,;]+/g)
+        .map((x) => x.trim())
+        .filter(Boolean)
+    )
+  );
+}
+function statusClass(status: CampaignStatus) {
+  if (status === "running") return "bg-amber-100 text-amber-800";
+  if (status === "completed") return "bg-emerald-100 text-emerald-800";
+  if (status === "stopped") return "bg-rose-100 text-rose-800";
+  return "bg-slate-100 text-slate-700";
+}
+function noticeClass(tone: NoticeTone) {
+  if (tone === "success") return "border-emerald-200 bg-emerald-50 text-emerald-900";
+  if (tone === "error") return "border-rose-200 bg-rose-50 text-rose-900";
+  return "border-sky-200 bg-sky-50 text-sky-900";
+}
 
-const SAFETY_MODE_ORDER: SafetyMode[] = ['preview', 'guided_live', 'autopilot'];
+export function App() {
+  const [screen, setScreen] = useState<Screen>("dashboard");
+  const [config, setConfig] = useState<ApiConfig>(() => normalizeConfig(readJson(STORE.api, DEFAULT_CONFIG)));
+  const [draftConfig, setDraftConfig] = useState<ApiConfig>(() => normalizeConfig(readJson(STORE.api, DEFAULT_CONFIG)));
+  const [busy, setBusy] = useState<Record<string, boolean>>({});
+  const [health, setHealth] = useState<"unknown" | "healthy" | "down">("unknown");
+  const [notice, setNotice] = useState<Notice | null>(null);
+  const [audit, setAudit] = useState<Audit[]>(() => readJson(STORE.audit, []));
+  const [consents, setConsents] = useState<ConsentRecord[]>([]);
+  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
+  const [selectedCampaignId, setSelectedCampaignId] = useState("");
+  const [consentFilter, setConsentFilter] = useState<"all" | ConsentStatus>("all");
+  const [addPhone, setAddPhone] = useState("");
+  const [revokePhone, setRevokePhone] = useState("");
+  const [lookupPhone, setLookupPhone] = useState("");
+  const [lookupStatus, setLookupStatus] = useState<string>("");
+  const [campaignForm, setCampaignForm] = useState<CampaignForm>(DEFAULT_FORM);
+  const [approvedBy, setApprovedBy] = useState("compliance.lead");
+  const [approvalNote, setApprovalNote] = useState("");
+  const [dryRun, setDryRun] = useState(true);
+  const [runRecipients, setRunRecipients] = useState<RunRecipient[]>([]);
+  const [intentText, setIntentText] = useState("");
+  const [intentUseAi, setIntentUseAi] = useState(true);
+  const [intentModel, setIntentModel] = useState("");
+  const [intentResult, setIntentResult] = useState<IntentResult | null>(null);
 
-const CONNECTOR_HELP_TEXT: Record<string, string> = {
-  openrouter: 'Cloud AI provider',
-  xai: 'Cloud AI provider',
-  ollama: 'Local AI provider',
-  wacli: 'WhatsApp messaging transport',
-  wppconnect: 'Legacy WhatsApp bridge',
-  propai: 'Property portal publishing bridge',
-  postgres: 'Database storage',
-  openclaw: 'Gateway connectivity'
-};
+  const selectedCampaign = useMemo(() => campaigns.find((c) => c.id === selectedCampaignId) || null, [campaigns, selectedCampaignId]);
+  const consentStats = useMemo(() => ({ total: consents.length, in: consents.filter((c) => c.status === "opted_in").length, out: consents.filter((c) => c.status === "opted_out").length }), [consents]);
+  const campaignStats = useMemo(() => ({ total: campaigns.length, run: campaigns.filter((c) => c.status === "running").length, draft: campaigns.filter((c) => c.status === "draft").length }), [campaigns]);
+  const audiencePreview = useMemo(() => parseAudience(campaignForm.audienceRaw), [campaignForm.audienceRaw]);
 
-const QUEUE_STATUS_LABEL: Record<QueueItem['status'], string> = {
-  queued: 'Waiting',
-  processing: 'Sending',
-  sent: 'Completed',
-  failed: 'Needs retry'
-};
-
-const CONNECTOR_STATUS_LABEL: Record<Connector['status'], string> = {
-  healthy: 'Ready',
-  warning: 'Needs attention',
-  error: 'Issue'
-};
-
-const OPENROUTER_MODELS = [
-  'openai/gpt-4o-mini',
-  'openai/gpt-4.1-mini',
-  'anthropic/claude-3.5-sonnet',
-  'anthropic/claude-3.7-sonnet',
-  'google/gemini-2.0-flash',
-  'meta-llama/llama-3.3-70b-instruct'
-] as const;
-
-const XAI_MODELS = [
-  'grok-2-latest',
-  'grok-2-vision-latest',
-  'grok-beta'
-] as const;
-
-export const App: React.FC = () => {
-  const [activeScreen, setActiveScreen] = useState<Screen>('dashboard');
-  const [hydrated, setHydrated] = useState(false);
-  const [publishResults, setPublishResults] = useState<PublishResult[]>([
-    { id: 'PR-7842', date: 'Feb 24, 14:32', listingTitle: '3BHK Bandra West', portal: '99acres', externalId: '99A-938472', status: 'success' },
-    { id: 'PR-7841', date: 'Feb 24, 13:19', listingTitle: '2BHK Andheri', portal: 'MagicBricks', externalId: 'MB-837462', status: 'success' },
-    { id: 'PR-7840', date: 'Feb 24, 11:05', listingTitle: '4BHK Powai', portal: 'Both', externalId: '99A-837291 / MB-291837', status: 'failed', reason: 'Rate limit exceeded' },
-  ]);
-
-  const [connectors, setConnectors] = useState<Connector[]>([
-    { id: 'openrouter', name: 'OpenRouter', status: 'healthy', lastPing: '12s ago' },
-    { id: 'xai', name: 'xAI', status: 'healthy', lastPing: '18s ago' },
-    { id: 'ollama', name: 'Ollama', status: 'healthy', lastPing: '41s ago' },
-    { id: 'wacli', name: 'WACLI', status: 'healthy', lastPing: 'just now' },
-    { id: 'wppconnect', name: 'WPPConnect Legacy', status: 'warning', lastPing: '3m ago' },
-    { id: 'propai', name: 'PropAI Live Bridge', status: 'healthy', lastPing: '8s ago', special: true },
-    { id: 'postgres', name: 'PostgreSQL Store', status: 'healthy', lastPing: '19s ago' },
-    { id: 'openclaw', name: 'OpenClaw Gateway', status: 'healthy', lastPing: '1m ago' },
-  ]);
-
-  const [propaiEnv] = useState({
-    PROPAI_LIVE_99ACRES_POST_URL: { value: 'https://api.propai.live/99acres/post', ready: true },
-    PROPAI_LIVE_MAGICBRICKS_POST_URL: { value: 'https://api.propai.live/magicbricks/post', ready: true },
-    PROPAI_LIVE_API_KEY: { value: 'sk-live-••••••••••••••••••', ready: true },
-  });
-
-  const [queueItems, setQueueItems] = useState<QueueItem[]>([
-    { id: 'GQ-3921', kind: 'property', priority: 'high', content: 'Luxury 4BHK in Worli', targets: 'Group-Mumbai-Premium', status: 'queued', scheduled: 'Now' },
-    { id: 'GQ-3920', kind: 'property', priority: 'medium', content: '2BHK Andheri East', targets: 'Group-Thane', status: 'processing', scheduled: '15:00' },
-  ]);
-
-  const [settingsForm, setSettingsForm] = useState({ ...DEFAULT_SETTINGS_FORM });
-  const [operatorProfile, setOperatorProfile] = useState<OperatorProfile>({ ...DEFAULT_OPERATOR_PROFILE });
-  const [safetyMode, setSafetyMode] = useState<SafetyMode>('guided_live');
-  const [onboarding, setOnboarding] = useState<OnboardingState>({ ...DEFAULT_ONBOARDING_STATE });
-  const [settingsSavedAt, setSettingsSavedAt] = useState<string>('');
-
-  const [formData, setFormData] = useState({
-    title: '3BHK Sea Facing in Bandra West',
-    description: 'Spacious 3 bedroom apartment with sea view, 1450 sq ft, 2 parking, 24x7 security.',
-    price: '2.85',
-    location: 'Bandra West, Mumbai',
-    portals: ['99acres', 'MagicBricks'] as ('99acres' | 'MagicBricks')[],
-    dryRun: false,
-  });
-
-  const [activeWacliTab, setActiveWacliTab] = useState<'send' | 'search' | 'chats' | 'doctor'>('send');
-  const [wacliOutput, setWacliOutput] = useState('');
-  const [currentAgentSession, setCurrentAgentSession] = useState([
-    { role: 'user', text: 'Create listing for 3BHK Bandra' },
-    { role: 'agent', text: 'Draft ready. Selected portals: 99acres + MagicBricks. Dry-run: false.' },
-    { role: 'system', text: 'post_to_99acres tool called → 99A-938472' },
-    { role: 'system', text: 'post_to_magicbricks tool called → MB-837462' },
-  ]);
-  const [guidedSessionId, setGuidedSessionId] = useState('');
-  const [guidedFlow, setGuidedFlow] = useState<GuidedFlowState | null>(null);
-  const [guidedAnswerInput, setGuidedAnswerInput] = useState('');
-  const [guidedBusy, setGuidedBusy] = useState(false);
-  const [guidedError, setGuidedError] = useState('');
-  const [guidedInfo, setGuidedInfo] = useState('');
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-
+  const addAudit = useCallback((action: string, severity: Severity, details: string) => {
+    setAudit((prev) => [{ id: uid("evt"), atIso: new Date().toISOString(), action, severity, details }, ...prev].slice(0, 200));
+  }, []);
+  const fail = useCallback(
+    (action: string, context: string, error: unknown) => {
+      const msg = `${context}: ${error instanceof Error ? error.message : "Unexpected error"}`;
+      setNotice({ tone: "error", message: msg });
+      addAudit(action, "error", msg);
+    },
+    [addAudit]
+  );
+  const withBusy = useCallback(async <T,>(key: string, fn: () => Promise<T>): Promise<T> => {
+    setBusy((p) => ({ ...p, [key]: true }));
     try {
-      const rawSettings = window.localStorage.getItem(STORAGE_KEYS.settings);
-      if (rawSettings) {
-        const parsed = JSON.parse(rawSettings) as Partial<typeof DEFAULT_SETTINGS_FORM>;
-        setSettingsForm((prev) => ({
-          ...prev,
-          ...parsed,
-        }));
-      }
-    } catch {
-      // ignore malformed local settings
+      return await fn();
+    } finally {
+      setBusy((p) => ({ ...p, [key]: false }));
     }
-
-    try {
-      const rawOperator = window.localStorage.getItem(STORAGE_KEYS.operator);
-      if (rawOperator) {
-        const parsed = JSON.parse(rawOperator) as Partial<OperatorProfile>;
-        setOperatorProfile((prev) => ({
-          ...prev,
-          ...parsed,
-          lang: parsed.lang === 'hi' || parsed.lang === 'hinglish' ? parsed.lang : prev.lang
-        }));
-      }
-    } catch {
-      // ignore malformed local operator profile
-    }
-
-    try {
-      const rawSafetyMode = window.localStorage.getItem(STORAGE_KEYS.safetyMode);
-      if (rawSafetyMode === 'preview' || rawSafetyMode === 'guided_live' || rawSafetyMode === 'autopilot') {
-        setSafetyMode(rawSafetyMode);
-      }
-    } catch {
-      // ignore malformed local safety mode
-    }
-
-    try {
-      const rawOnboarding = window.localStorage.getItem(STORAGE_KEYS.onboarding);
-      if (rawOnboarding) {
-        const parsed = JSON.parse(rawOnboarding) as Partial<OnboardingState>;
-        const normalizedStep = parsed.step === 2 || parsed.step === 3 ? parsed.step : 1;
-        setOnboarding({
-          step: normalizedStep,
-          completed: Boolean(parsed.completed),
-          skipped: Boolean(parsed.skipped)
-        });
-      }
-    } catch {
-      // ignore malformed local onboarding state
-    }
-
-    setHydrated(true);
   }, []);
 
-  useEffect(() => {
-    if (!hydrated || typeof window === 'undefined') return;
-    window.localStorage.setItem(STORAGE_KEYS.settings, JSON.stringify(settingsForm));
-  }, [settingsForm, hydrated]);
+  const requestRaw = useCallback(
+    async <T,>(path: string, method: "GET" | "POST" = "GET", body?: unknown): Promise<{ status: number; payload: ApiEnvelope<T> | null }> => {
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (config.apiKey) headers["x-agent-api-key"] = config.apiKey;
+      headers["x-agent-role"] = config.role;
+      const url = `${config.baseUrl.replace(/\/+$/, "")}${path}`;
+      const response = await fetch(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+      const text = await response.text();
+      let payload: ApiEnvelope<T> | null = null;
+      if (text) {
+        try {
+          payload = JSON.parse(text) as ApiEnvelope<T>;
+        } catch {
+          payload = null;
+        }
+      }
+      return { status: response.status, payload };
+    },
+    [config]
+  );
+  const request = useCallback(
+    async <T,>(path: string, method: "GET" | "POST" = "GET", body?: unknown): Promise<T> => {
+      const { status, payload } = await requestRaw<T>(path, method, body);
+      if (status >= 400 || !payload?.ok) throw new Error(payload?.error || `HTTP ${status}`);
+      return (payload.result ?? ({} as T)) as T;
+    },
+    [requestRaw]
+  );
 
-  useEffect(() => {
-    if (!hydrated || typeof window === 'undefined') return;
-    window.localStorage.setItem(STORAGE_KEYS.operator, JSON.stringify(operatorProfile));
-  }, [operatorProfile, hydrated]);
+  const probeHealth = useCallback(async () => {
+    const { status, payload } = await requestRaw<{ service: string }>("/health");
+    const ok = status === 200 && Boolean(payload?.ok);
+    setHealth(ok ? "healthy" : "down");
+    return ok;
+  }, [requestRaw]);
+  const loadConsents = useCallback(async () => {
+    const q = consentFilter === "all" ? "" : `?status=${consentFilter}`;
+    const data = await request<{ records: ConsentRecord[] }>(`/realtor/consent/list${q}`);
+    setConsents(data.records);
+  }, [consentFilter, request]);
+  const loadCampaigns = useCallback(async () => {
+    const data = await request<{ campaigns: Campaign[] }>("/realtor/campaign/list");
+    setCampaigns(data.campaigns);
+  }, [request]);
 
-  useEffect(() => {
-    if (!hydrated || typeof window === 'undefined') return;
-    window.localStorage.setItem(STORAGE_KEYS.safetyMode, safetyMode);
-  }, [safetyMode, hydrated]);
-
-  useEffect(() => {
-    if (!hydrated || typeof window === 'undefined') return;
-    window.localStorage.setItem(STORAGE_KEYS.onboarding, JSON.stringify(onboarding));
-  }, [onboarding, hydrated]);
-
-  useEffect(() => {
-    const targetDryRun = SAFETY_MODE_META[safetyMode].dryRun;
-    setFormData((prev) => (prev.dryRun === targetDryRun ? prev : { ...prev, dryRun: targetDryRun }));
-  }, [safetyMode]);
-
-  useEffect(() => {
-    if (activeScreen !== 'publish-studio') return;
-
-    let cancelled = false;
-    const loadGuided = async () => {
+  const refreshAll = useCallback(async () => {
+    await withBusy("refresh", async () => {
       try {
-        setGuidedBusy(true);
-        setGuidedError('');
-        const sessionId = await ensureGuidedSession();
-        if (cancelled) return;
-        await refreshGuidedFlow(sessionId);
-      } catch (error) {
-        if (cancelled) return;
-        setGuidedError(error instanceof Error ? error.message : String(error));
-      } finally {
-        if (!cancelled) {
-          setGuidedBusy(false);
-        }
-      }
-    };
-
-    void loadGuided();
-    return () => {
-      cancelled = true;
-    };
-  }, [activeScreen]);
-
-  const navItems = [
-    { id: 'dashboard' as const, label: 'Dashboard', icon: LayoutDashboard },
-    { id: 'publish-studio' as const, label: 'Listing Publish Studio', icon: PenTool },
-    { id: 'publish-results' as const, label: 'Publish Results', icon: CheckCircle },
-    { id: 'portal-status' as const, label: 'Publishing Connections', icon: Activity },
-    { id: 'whatsapp-connect' as const, label: 'WhatsApp Connect', icon: MessageCircle },
-    { id: 'pairing-approval' as const, label: 'Pairing Approval', icon: UserCheck },
-    { id: 'approvals-queue' as const, label: 'Approvals Queue', icon: Clock },
-    { id: 'agent-session' as const, label: 'Agent Session', icon: Bot },
-    { id: 'session-list' as const, label: 'Session List', icon: List },
-    { id: 'group-intake' as const, label: 'Group Posting Intake', icon: Plus },
-    { id: 'group-queue' as const, label: 'Outbox Queue', icon: Send },
-    { id: 'dispatch-center' as const, label: 'Send Center', icon: Play },
-    { id: 'connectors-center' as const, label: 'Service Connections', icon: Server },
-    { id: 'wacli-tools' as const, label: 'WhatsApp Actions', icon: Zap },
-    { id: 'queue-runtime' as const, label: 'Background Tasks', icon: Database },
-    { id: 'properties' as const, label: 'Properties / Inventory', icon: Plus },
-    { id: 'system-health' as const, label: 'Health Check', icon: HeartPulse },
-    { id: 'settings' as const, label: 'Settings', icon: Settings },
-  ] as const;
-
-  const handlePublish = () => {
-    const newResult: PublishResult = {
-      id: `PR-${Math.floor(Math.random() * 9000) + 1000}`,
-      date: new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date()),
-      listingTitle: formData.title,
-      portal: formData.portals.length === 2 ? 'Both' : formData.portals[0] === '99acres' ? '99acres' : 'MagicBricks',
-      externalId: `99A-${Math.floor(Math.random() * 900000)}`,
-      status: Math.random() > 0.15 ? 'success' : 'failed',
-      reason: Math.random() > 0.85 ? 'API timeout' : undefined,
-    };
-    setPublishResults([newResult, ...publishResults]);
-    setActiveScreen('publish-results');
-
-    setCurrentAgentSession(prev => [
-      ...prev,
-      { role: 'system', text: `post_to_${formData.portals.includes('99acres') ? '99acres' : 'magicbricks'} tool called → ${newResult.externalId}` }
-    ]);
-  };
-
-  const testConnector = (id: string) => {
-    setConnectors(prev => prev.map(c => 
-      c.id === id ? { ...c, status: 'healthy', lastPing: 'just now' } : c
-    ));
-    alert(`✅ ${connectors.find(c => c.id === id)?.name} connection tested successfully`);
-  };
-
-  const approvePairing = (id: string) => {
-    alert(`✅ Pairing code ${id} approved`);
-  };
-
-  const addToQueue = () => {
-    const newItem: QueueItem = {
-      id: `GQ-${Math.floor(Math.random() * 9000) + 1000}`,
-      kind: 'property',
-      priority: 'high',
-      content: 'New luxury listing added from studio',
-      targets: 'Group-Mumbai-Premium, Group-Thane',
-      status: 'queued',
-      scheduled: 'Now',
-    };
-    setQueueItems([newItem, ...queueItems]);
-    setActiveScreen('group-queue');
-  };
-
-  const saveSettings = () => {
-    const stamp = new Intl.DateTimeFormat('en-US', {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit'
-    }).format(new Date());
-    setSettingsSavedAt(stamp);
-    if (!onboarding.completed && !onboarding.skipped && onboarding.step === 3) {
-      setOnboarding((prev) => ({ ...prev, completed: true, skipped: false }));
-    }
-    alert('✅ Settings saved locally in this operator surface preview');
-  };
-
-  const onboardingProgress = onboarding.completed ? 100 : Math.round((onboarding.step / 3) * 100);
-  const selectedSafetyMode = SAFETY_MODE_META[safetyMode];
-
-  const handleOnboardingNext = () => {
-    setOnboarding((prev) => {
-      if (prev.completed) return prev;
-      if (prev.step >= 3) {
-        return { ...prev, completed: true, skipped: false };
-      }
-      return { ...prev, step: (prev.step + 1) as 1 | 2 | 3 };
-    });
-  };
-
-  const handleOnboardingBack = () => {
-    setOnboarding((prev) => {
-      if (prev.completed || prev.step <= 1) return prev;
-      return { ...prev, step: (prev.step - 1) as 1 | 2 | 3 };
-    });
-  };
-
-  const handleOnboardingSkip = () => {
-    setOnboarding((prev) => ({ ...prev, skipped: true }));
-  };
-
-  const handleOnboardingResume = () => {
-    setOnboarding((prev) => ({ ...prev, skipped: false, completed: false }));
-  };
-
-  const handleOnboardingReset = () => {
-    setOnboarding({ ...DEFAULT_ONBOARDING_STATE });
-  };
-
-  const postJson = async <T,>(endpoint: string, payload: Record<string, unknown>): Promise<T> => {
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-    const body = await response.json().catch(() => ({})) as { error?: string } & T;
-    if (!response.ok) {
-      throw new Error(body.error || `Request failed (${response.status})`);
-    }
-    return body;
-  };
-
-  const getJson = async <T,>(endpoint: string): Promise<T> => {
-    const response = await fetch(endpoint, {
-      method: 'GET',
-      headers: { 'content-type': 'application/json' }
-    });
-    const body = await response.json().catch(() => ({})) as { error?: string } & T;
-    if (!response.ok) {
-      throw new Error(body.error || `Request failed (${response.status})`);
-    }
-    return body;
-  };
-
-  const ensureGuidedSession = async (): Promise<string> => {
-    if (guidedSessionId) return guidedSessionId;
-    const body = await postJson<{ result: { session: { id: string } } }>(
-      '/agent/session/start',
-      {}
-    );
-    const id = body.result.session.id;
-    setGuidedSessionId(id);
-    return id;
-  };
-
-  const refreshGuidedFlow = async (sessionIdOverride?: string) => {
-    const sessionId = sessionIdOverride || guidedSessionId || await ensureGuidedSession();
-    const body = await getJson<{ result: { guidedFlow: GuidedFlowState | null } }>(
-      `/guided/state?sessionId=${encodeURIComponent(sessionId)}`
-    );
-    setGuidedFlow(body.result.guidedFlow);
-    return body.result.guidedFlow;
-  };
-
-  const startGuidedPublishFlow = async () => {
-    setGuidedBusy(true);
-    setGuidedError('');
-    setGuidedInfo('');
-    try {
-      const sessionId = await ensureGuidedSession();
-      const body = await postJson<{ result: { guidedFlow: GuidedFlowState } }>(
-        '/guided/start',
-        {
-          sessionId,
-          flowId: 'publish_listing'
-        }
-      );
-      setGuidedFlow(body.result.guidedFlow);
-      setGuidedAnswerInput('');
-      setGuidedInfo('Guided flow started. Answer one step at a time.');
-    } catch (error) {
-      setGuidedError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setGuidedBusy(false);
-    }
-  };
-
-  const answerGuidedStep = async () => {
-    if (!guidedFlow || guidedFlow.status !== 'active') return;
-    const currentStep = guidedFlow.steps.find((step) => step.isCurrent);
-    if (!currentStep) return;
-
-    if (!guidedAnswerInput.trim()) {
-      setGuidedError(`Please enter a value for "${currentStep.label}".`);
-      return;
-    }
-
-    setGuidedBusy(true);
-    setGuidedError('');
-    setGuidedInfo('');
-    try {
-      const sessionId = guidedSessionId || await ensureGuidedSession();
-      let answerValue: string | number = guidedAnswerInput.trim();
-      if (currentStep.kind === 'number') {
-        const parsed = Number(guidedAnswerInput.trim().replace(/,/g, ''));
-        if (!Number.isFinite(parsed)) {
-          setGuidedError(`"${currentStep.label}" expects a number.`);
-          setGuidedBusy(false);
+        const ok = await probeHealth();
+        if (!ok) {
+          setNotice({ tone: "error", message: "Backend unreachable." });
           return;
         }
-        answerValue = parsed;
-      }
-
-      const body = await postJson<{ result: { guidedFlow: GuidedFlowState } }>(
-        '/guided/answer',
-        {
-          sessionId,
-          stepId: currentStep.id,
-          answer: answerValue
+        if (!config.apiKey) {
+          setNotice({ tone: "info", message: "Backend healthy. Add AGENT_API_KEY in Settings for protected endpoints." });
+          return;
         }
-      );
-      setGuidedFlow(body.result.guidedFlow);
-      setGuidedAnswerInput('');
-      if (body.result.guidedFlow.status === 'completed') {
-        setGuidedInfo('Guided flow completed. Review generated request and send it to agent queue.');
-      } else {
-        setGuidedInfo('Step saved.');
+        await Promise.all([loadConsents(), loadCampaigns()]);
+        setNotice({ tone: "success", message: "Data synced." });
+      } catch (error) {
+        fail("refresh", "Refresh failed", error);
       }
-    } catch (error) {
-      setGuidedError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setGuidedBusy(false);
-    }
+    });
+  }, [config.apiKey, fail, loadCampaigns, loadConsents, probeHealth, withBusy]);
+
+  useEffect(() => {
+    writeJson(STORE.audit, audit);
+  }, [audit]);
+  useEffect(() => {
+    if (!notice) return;
+    const t = window.setTimeout(() => setNotice(null), 4000);
+    return () => window.clearTimeout(t);
+  }, [notice]);
+  useEffect(() => {
+    if (!campaigns.length) setSelectedCampaignId("");
+    else if (!selectedCampaignId || !campaigns.some((c) => c.id === selectedCampaignId)) setSelectedCampaignId(campaigns[0].id);
+  }, [campaigns, selectedCampaignId]);
+  useEffect(() => {
+    void refreshAll();
+  }, [refreshAll]);
+
+  const nav: Array<{ id: Screen; label: string; icon: typeof Gauge }> = [
+    { id: "dashboard", label: "Dashboard", icon: Gauge },
+    { id: "consents", label: "Consent Ledger", icon: ShieldCheck },
+    { id: "campaign_create", label: "Campaign Studio", icon: Send },
+    { id: "campaign_ops", label: "Campaign Ops", icon: PlayCircle },
+    { id: "intent_lab", label: "Intent Lab", icon: Bot },
+    { id: "audit", label: "Audit Trail", icon: ScrollText },
+    { id: "settings", label: "Settings", icon: Settings2 }
+  ];
+
+  const saveSettings = () => {
+    const next = normalizeConfig(draftConfig);
+    setConfig(next);
+    writeJson(STORE.api, next);
+    setNotice({ tone: "success", message: "Settings saved." });
+    addAudit("settings", "success", `Updated target ${next.baseUrl}.`);
+  };
+  const addConsent = async () => {
+    if (!addPhone.trim()) return setNotice({ tone: "error", message: "Phone required." });
+    await withBusy("add", async () => {
+      try {
+        await request("/realtor/consent/add", "POST", { phone: addPhone.trim(), source: "manual", purpose: "marketing", channel: "whatsapp" });
+        setAddPhone("");
+        await loadConsents();
+        setNotice({ tone: "success", message: "Consent added." });
+        addAudit("consent_add", "success", `Added ${addPhone.trim()}.`);
+      } catch (error) {
+        fail("consent_add", "Add consent failed", error);
+      }
+    });
+  };
+  const revokeConsent = async () => {
+    if (!revokePhone.trim()) return setNotice({ tone: "error", message: "Phone required." });
+    await withBusy("revoke", async () => {
+      try {
+        await request("/realtor/consent/revoke", "POST", { phone: revokePhone.trim(), source: "manual", reason: "user-request" });
+        setRevokePhone("");
+        await loadConsents();
+        setNotice({ tone: "success", message: "Consent revoked." });
+        addAudit("consent_revoke", "warn", `Revoked ${revokePhone.trim()}.`);
+      } catch (error) {
+        fail("consent_revoke", "Revoke failed", error);
+      }
+    });
+  };
+  const lookupConsent = async () => {
+    if (!lookupPhone.trim()) return setNotice({ tone: "error", message: "Phone required." });
+    await withBusy("lookup", async () => {
+      try {
+        const q = encodeURIComponent(lookupPhone.trim());
+        const data = await request<{ phone: string; record: ConsentRecord | null; canMessage: boolean }>(`/realtor/consent/status?phone=${q}`);
+        setLookupStatus(`${data.record?.status || "not_found"} | canMessage=${data.canMessage ? "yes" : "no"}`);
+      } catch (error) {
+        fail("consent_lookup", "Lookup failed", error);
+      }
+    });
+  };
+  const createCampaign = async () => {
+    if (!campaignForm.name.trim() || !campaignForm.templateName.trim()) return setNotice({ tone: "error", message: "Name and template required." });
+    await withBusy("create", async () => {
+      try {
+        const data = await request<{ campaign: Campaign }>("/realtor/campaign/create", "POST", {
+          name: campaignForm.name,
+          client: campaignForm.client,
+          templateName: campaignForm.templateName,
+          language: campaignForm.language,
+          category: campaignForm.category,
+          audience: parseAudience(campaignForm.audienceRaw),
+          consentMode: campaignForm.consentMode,
+          requireApproval: campaignForm.requireApproval,
+          reraProjectId: campaignForm.reraProjectId || undefined
+        });
+        await loadCampaigns();
+        setSelectedCampaignId(data.campaign.id);
+        setScreen("campaign_ops");
+        setNotice({ tone: "success", message: `Campaign ${data.campaign.id} created.` });
+      } catch (error) {
+        fail("campaign_create", "Create failed", error);
+      }
+    });
   };
 
-  const executeGuidedCompletion = async () => {
-    if (!guidedFlow?.completion) return;
-
-    setGuidedBusy(true);
-    setGuidedError('');
-    setGuidedInfo('');
-    try {
-      const execution = guidedFlow.completion.suggestedExecution;
-      const response = await fetch(execution.endpoint, {
-        method: execution.method,
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(execution.payload)
-      });
-      const body = await response.json().catch(() => ({})) as {
-        error?: string;
-        result?: {
-          response?: {
-            plan?: Array<{ tool: string; reason: string }>;
-            queuedActions?: Array<{ tool: string }>;
-          };
-        };
-      };
-
-      if (!response.ok) {
-        throw new Error(body.error || `Request failed (${response.status})`);
+  const preflightCampaign = async () => {
+    if (!selectedCampaignId) return setNotice({ tone: "error", message: "Select a campaign." });
+    await withBusy("preflight", async () => {
+      try {
+        const data = await request<{ preflight: { ok: boolean }; errors: string[] }>("/realtor/campaign/preflight", "POST", { id: selectedCampaignId });
+        await loadCampaigns();
+        setNotice({ tone: data.preflight.ok ? "success" : "error", message: data.preflight.ok ? "Preflight passed." : `Preflight blocked: ${data.errors.join(" | ")}` });
+      } catch (error) {
+        fail("campaign_preflight", "Preflight failed", error);
       }
-
-      const plan = body.result?.response?.plan || [];
-      const queuedActions = body.result?.response?.queuedActions || [];
-      const planSummary = plan.length > 0
-        ? `Plan: ${plan.map((item) => item.tool).join(', ')}`
-        : 'No plan returned.';
-      const queuedSummary = queuedActions.length > 0
-        ? `Queued: ${queuedActions.map((item) => item.tool).join(', ')}`
-        : 'Nothing queued.';
-
-      setCurrentAgentSession(prev => [
-        ...prev,
-        { role: 'system', text: `Guided execution sent. ${planSummary} ${queuedSummary}` }
-      ]);
-      setGuidedInfo('Guided request sent to agent session queue.');
-      setActiveScreen('agent-session');
-    } catch (error) {
-      setGuidedError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setGuidedBusy(false);
-    }
+    });
+  };
+  const approveCampaign = async () => {
+    if (!selectedCampaignId) return setNotice({ tone: "error", message: "Select a campaign." });
+    if (!approvedBy.trim()) return setNotice({ tone: "error", message: "approvedBy is required." });
+    await withBusy("approve", async () => {
+      try {
+        await request("/realtor/campaign/approve", "POST", { id: selectedCampaignId, approvedBy: approvedBy.trim(), note: approvalNote.trim() || undefined });
+        await loadCampaigns();
+        setNotice({ tone: "success", message: "Campaign approved." });
+      } catch (error) {
+        fail("campaign_approve", "Approval failed", error);
+      }
+    });
+  };
+  const runCampaign = async () => {
+    if (!selectedCampaignId) return setNotice({ tone: "error", message: "Select a campaign." });
+    await withBusy("run", async () => {
+      try {
+        const res = await requestRaw<{ campaign: Campaign; processedRecipients?: RunRecipient[]; errors?: string[] }>("/realtor/campaign/run", "POST", { id: selectedCampaignId, dryRun });
+        if (res.status === 200 && res.payload?.ok) {
+          setRunRecipients(res.payload.result?.processedRecipients || []);
+          await loadCampaigns();
+          setNotice({ tone: "success", message: `Run completed (${dryRun ? "dry" : "live"}).` });
+          return;
+        }
+        if (res.status === 409 && res.payload?.result) {
+          setRunRecipients([]);
+          await loadCampaigns();
+          setNotice({ tone: "error", message: `Run blocked: ${(res.payload.result.errors || []).join(" | ") || "policy error"}` });
+          return;
+        }
+        throw new Error(res.payload?.error || `HTTP ${res.status}`);
+      } catch (error) {
+        fail("campaign_run", "Run failed", error);
+      }
+    });
+  };
+  const classifyIntent = async () => {
+    if (!intentText.trim()) return setNotice({ tone: "error", message: "Message is required." });
+    await withBusy("intent", async () => {
+      try {
+        const data = await request<IntentResult>("/realtor/intent/classify", "POST", {
+          text: intentText.trim(),
+          useAi: intentUseAi,
+          model: intentModel.trim() || undefined
+        });
+        setIntentResult(data);
+        setNotice({ tone: "success", message: `Intent ${data.intent} (${Math.round(data.confidence * 100)}%).` });
+      } catch (error) {
+        fail("intent_classify", "Classification failed", error);
+      }
+    });
+  };
+  const clearAudit = () => {
+    setAudit([]);
+    setNotice({ tone: "info", message: "Audit cleared." });
   };
 
-  const healthyConnectors = connectors.filter((item) => item.status === 'healthy').length;
-  const allConnectorsHealthy = healthyConnectors === connectors.length;
-  const currentGuidedStep = guidedFlow?.steps.find((step) => step.isCurrent);
+  const progress = selectedCampaign?.audience.length
+    ? Math.round((selectedCampaign.progress.processed / selectedCampaign.audience.length) * 100)
+    : 0;
 
   return (
-    <div className="flex h-screen bg-zinc-950 text-white overflow-hidden font-sans">
-      {/* Sidebar */}
-      <div className="w-72 bg-zinc-900 border-r border-zinc-800 flex flex-col">
-        <div className="p-6 border-b border-zinc-800 flex items-center gap-3">
-          <div className="w-9 h-9 bg-emerald-600 rounded-2xl flex items-center justify-center text-xl font-bold">P</div>
+    <div className="min-h-screen app-background px-4 py-5 text-slate-900 lg:px-8">
+      <div className="mx-auto max-w-[1440px]">
+        <header className="surface-panel fade-rise flex flex-wrap items-center justify-between gap-3 rounded-3xl p-5">
           <div>
-            <div className="font-semibold text-2xl tracking-tighter">PropAI Sync</div>
-            <div className="text-[10px] text-zinc-500 -mt-1">REALTY BRIDGE v2.4.1</div>
+            <h1 className="text-xl font-semibold tracking-tight lg:text-2xl">PropAI Realtor Broadcast Control Plane</h1>
+            <p className="mt-1 text-sm text-slate-600">WABA + AI + compliance operations for Indian realtors.</p>
           </div>
-        </div>
+          <div className="flex items-center gap-2">
+            <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-medium ${health === "healthy" ? "bg-emerald-100 text-emerald-800" : health === "down" ? "bg-rose-100 text-rose-800" : "bg-slate-100 text-slate-700"}`}>
+              {health === "healthy" ? <CheckCircle2 className="mr-1 h-3.5 w-3.5" /> : <AlertCircle className="mr-1 h-3.5 w-3.5" />}
+              API {health}
+            </span>
+            <button type="button" onClick={() => void refreshAll()} disabled={Boolean(busy.refresh)} className="inline-flex items-center rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs hover:bg-slate-50 disabled:opacity-60">
+              {busy.refresh ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <RefreshCcw className="mr-1 h-3.5 w-3.5" />}Sync
+            </button>
+          </div>
+        </header>
 
-        <div className="px-3 py-6 flex-1 overflow-y-auto">
-          <div className="text-xs font-medium text-zinc-500 px-3 mb-2">CORE</div>
-          {navItems.slice(0, 4).map((item) => {
-            const Icon = item.icon;
-            return (
-              <button
-                key={item.id}
-                onClick={() => setActiveScreen(item.id)}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-3xl text-sm font-medium transition-all ${activeScreen === item.id 
-                  ? 'bg-zinc-800 text-white shadow-inner' 
-                  : 'hover:bg-zinc-800/50 text-zinc-400'}`}
-              >
-                <Icon className="w-5 h-5" />
-                {item.label}
-              </button>
-            );
-          })}
+        {notice && <div className={`fade-rise mt-4 rounded-2xl border px-4 py-3 text-sm ${noticeClass(notice.tone)}`}>{notice.message}</div>}
 
-          <div className="h-px bg-zinc-800 my-6 mx-3" />
-
-          <div className="text-xs font-medium text-zinc-500 px-3 mb-2">WHATSAPP &amp; AGENTS</div>
-          {navItems.slice(4, 9).map((item) => {
-            const Icon = item.icon;
-            return (
-              <button
-                key={item.id}
-                onClick={() => setActiveScreen(item.id)}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-3xl text-sm font-medium transition-all ${activeScreen === item.id 
-                  ? 'bg-zinc-800 text-white shadow-inner' 
-                  : 'hover:bg-zinc-800/50 text-zinc-400'}`}
-              >
-                <Icon className="w-5 h-5" />
-                {item.label}
-              </button>
-            );
-          })}
-
-          <div className="h-px bg-zinc-800 my-6 mx-3" />
-
-          <div className="text-xs font-medium text-zinc-500 px-3 mb-2">GROUP &amp; DISPATCH</div>
-          {navItems.slice(9, 13).map((item) => {
-            const Icon = item.icon;
-            return (
-              <button
-                key={item.id}
-                onClick={() => setActiveScreen(item.id)}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-3xl text-sm font-medium transition-all ${activeScreen === item.id 
-                  ? 'bg-zinc-800 text-white shadow-inner' 
-                  : 'hover:bg-zinc-800/50 text-zinc-400'}`}
-              >
-                <Icon className="w-5 h-5" />
-                {item.label}
-              </button>
-            );
-          })}
-
-          <div className="h-px bg-zinc-800 my-6 mx-3" />
-
-          <div className="text-xs font-medium text-zinc-500 px-3 mb-2">INFRASTRUCTURE</div>
-          {navItems.slice(13).map((item) => {
-            const Icon = item.icon;
-            return (
-              <button
-                key={item.id}
-                onClick={() => setActiveScreen(item.id)}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-3xl text-sm font-medium transition-all ${activeScreen === item.id 
-                  ? 'bg-zinc-800 text-white shadow-inner' 
-                  : 'hover:bg-zinc-800/50 text-zinc-400'}`}
-              >
-                <Icon className="w-5 h-5" />
-                {item.label}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Main Content */}
-      <div className="flex-1 overflow-auto bg-zinc-950">
-        <div className="p-8">
-          {activeScreen === 'dashboard' && (
-            <div className="space-y-8">
-              <div className="text-3xl font-semibold">Dashboard</div>
-              <div className="flex items-center gap-3 text-sm text-zinc-300">
-                <span className="px-3 py-1 rounded-3xl bg-emerald-500/10 text-emerald-300">
-                  {selectedSafetyMode.label}
-                </span>
-                <span>dryRun={selectedSafetyMode.dryRun ? 'on' : 'off'}</span>
-                <span>autonomy={selectedSafetyMode.autonomy}</span>
-                {onboarding.completed ? (
-                  <span className="px-3 py-1 rounded-3xl bg-emerald-500/10 text-emerald-300">Setup complete</span>
-                ) : onboarding.skipped ? (
-                  <span className="px-3 py-1 rounded-3xl bg-amber-500/10 text-amber-300">Setup paused</span>
-                ) : (
-                  <span className="px-3 py-1 rounded-3xl bg-zinc-800 text-zinc-300">Setup {onboardingProgress}%</span>
-                )}
-              </div>
-              <div className="grid grid-cols-4 gap-6">
-                <div className="bg-zinc-900 rounded-3xl p-8 border border-zinc-800">
-                  <div className="text-sm text-zinc-400 mb-2">Total Listings Published</div>
-                  <div className="text-4xl font-bold">1,247</div>
-                  <div className="text-xs text-emerald-400 mt-4">↑ 12% this month</div>
-                </div>
-                <div className="bg-zinc-900 rounded-3xl p-8 border border-zinc-800">
-                  <div className="text-sm text-zinc-400 mb-2">Success Rate</div>
-                  <div className="text-4xl font-bold">98.7%</div>
-                  <div className="text-xs text-emerald-400 mt-4">7 failed today</div>
-                </div>
-                <div className="bg-zinc-900 rounded-3xl p-8 border border-zinc-800">
-                  <div className="text-sm text-zinc-400 mb-2">Active Connectors</div>
-                  <div className="text-4xl font-bold">{healthyConnectors}/{connectors.length}</div>
-                  <div className={`text-xs mt-4 ${allConnectorsHealthy ? 'text-emerald-400' : 'text-amber-400'}`}>
-                    {allConnectorsHealthy ? 'All healthy' : 'Some need attention'}
-                  </div>
-                </div>
-                <div className="bg-zinc-900 rounded-3xl p-8 border border-zinc-800">
-                  <div className="text-sm text-zinc-400 mb-2">Queue Depth</div>
-                  <div className="text-4xl font-bold">42</div>
-                  <div className="text-xs text-amber-400 mt-4">2 processing</div>
-                </div>
-              </div>
-
-              {!onboarding.completed && !onboarding.skipped && (
-                <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-8 space-y-6">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <div className="text-xl font-semibold">First-Time Setup</div>
-                      <div className="text-sm text-zinc-400 mt-1">Complete these 3 steps once. We will remember your progress.</div>
-                    </div>
-                    <div className="text-sm text-zinc-400">Step {onboarding.step}/3</div>
-                  </div>
-
-                  <div className="w-full h-2 rounded-full bg-zinc-800 overflow-hidden">
-                    <div className="h-full bg-emerald-500 transition-all duration-300" style={{ width: `${onboardingProgress}%` }} />
-                  </div>
-
-                  {onboarding.step === 1 && (
-                    <div className="space-y-3">
-                      <div className="text-sm text-zinc-300">Choose how controlled execution should be.</div>
-                      <div className="grid grid-cols-3 gap-4">
-                        {SAFETY_MODE_ORDER.map((modeId) => {
-                          const mode = SAFETY_MODE_META[modeId];
-                          const selected = safetyMode === modeId;
-                          return (
-                            <button
-                              key={modeId}
-                              onClick={() => setSafetyMode(modeId)}
-                              className={`text-left rounded-3xl border p-4 transition-colors ${selected ? 'border-emerald-400 bg-emerald-500/10' : 'border-zinc-700 hover:border-zinc-500'}`}
-                            >
-                              <div className="font-medium">{mode.label}</div>
-                              <div className="text-xs text-zinc-400 mt-2">{mode.subtitle}</div>
-                              <div className="text-xs text-zinc-500 mt-2">dryRun={mode.dryRun ? 'on' : 'off'} · autonomy={mode.autonomy}</div>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-
-                  {onboarding.step === 2 && (
-                    <div className="space-y-4">
-                      <div className="text-sm text-zinc-300">Set your operator defaults for faster daily operations.</div>
-                      <div className="grid grid-cols-2 gap-4">
-                        <input
-                          value={operatorProfile.name}
-                          onChange={(e) => setOperatorProfile({ ...operatorProfile, name: e.target.value })}
-                          placeholder="Operator name"
-                          className="w-full rounded-3xl py-3 px-5 bg-zinc-800 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                        />
-                        <input
-                          value={operatorProfile.phone}
-                          onChange={(e) => setOperatorProfile({ ...operatorProfile, phone: e.target.value })}
-                          placeholder="Default phone (+E164)"
-                          className="w-full rounded-3xl py-3 px-5 bg-zinc-800 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                        />
-                        <input
-                          value={operatorProfile.city}
-                          onChange={(e) => setOperatorProfile({ ...operatorProfile, city: e.target.value })}
-                          placeholder="Default city"
-                          className="w-full rounded-3xl py-3 px-5 bg-zinc-800 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                        />
-                        <select
-                          value={operatorProfile.lang}
-                          onChange={(e) => setOperatorProfile({ ...operatorProfile, lang: e.target.value as OperatorLanguage })}
-                          className="w-full rounded-3xl py-3 px-5 bg-zinc-800 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                        >
-                          <option value="en">en</option>
-                          <option value="hi">hi</option>
-                          <option value="hinglish">hinglish</option>
-                        </select>
-                      </div>
-                    </div>
-                  )}
-
-                  {onboarding.step === 3 && (
-                    <div className="bg-zinc-800/70 rounded-3xl p-5 space-y-2 text-sm text-zinc-300">
-                      <div>Safety mode: <span className="text-white">{selectedSafetyMode.label}</span></div>
-                      <div>Operator: <span className="text-white">{operatorProfile.name || 'Not set'}</span></div>
-                      <div>Phone: <span className="text-white">{operatorProfile.phone || 'Not set'}</span></div>
-                      <div>City: <span className="text-white">{operatorProfile.city || 'Not set'}</span></div>
-                      <div>Language: <span className="text-white">{operatorProfile.lang}</span></div>
-                      <div className="text-zinc-400 pt-2">You can edit these any time from Settings.</div>
-                    </div>
-                  )}
-
-                  <div className="flex items-center gap-3">
-                    <button
-                      onClick={handleOnboardingSkip}
-                      className="px-4 py-2 rounded-3xl border border-zinc-700 text-zinc-300 hover:border-zinc-500 transition-colors"
-                    >
-                      Skip for now
-                    </button>
-                    <button
-                      onClick={handleOnboardingBack}
-                      disabled={onboarding.step === 1}
-                      className="px-4 py-2 rounded-3xl border border-zinc-700 text-zinc-300 disabled:opacity-40 hover:border-zinc-500 transition-colors"
-                    >
-                      Back
-                    </button>
-                    <button
-                      onClick={handleOnboardingNext}
-                      className="px-6 py-2 rounded-3xl bg-emerald-600 hover:bg-emerald-700 transition-colors font-medium"
-                    >
-                      {onboarding.step === 3 ? 'Finish setup' : 'Next'}
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {onboarding.skipped && !onboarding.completed && (
-                <div className="bg-amber-500/10 border border-amber-500/30 rounded-3xl p-6 flex items-center justify-between">
-                  <div className="text-sm text-amber-200">Setup is paused. Resume onboarding when you are ready.</div>
-                  <button
-                    onClick={handleOnboardingResume}
-                    className="px-5 py-2 rounded-3xl bg-amber-500/20 text-amber-100 hover:bg-amber-500/30 transition-colors"
-                  >
-                    Resume setup
+        <div className="mt-5 grid gap-4 lg:grid-cols-[270px_minmax(0,1fr)]">
+          <aside className="surface-panel rounded-3xl p-3 lg:sticky lg:top-5 lg:h-[calc(100vh-72px)] lg:overflow-auto">
+            <div className="space-y-1">
+              {nav.map((item) => {
+                const Icon = item.icon;
+                const active = screen === item.id;
+                return (
+                  <button key={item.id} type="button" onClick={() => setScreen(item.id)} className={`w-full rounded-2xl px-3 py-2 text-left ${active ? "bg-emerald-600 text-white" : "hover:bg-slate-100"}`}>
+                    <div className="flex items-center gap-2 text-sm font-medium"><Icon className="h-4 w-4" />{item.label}</div>
                   </button>
-                </div>
-              )}
-
-              {onboarding.completed && (
-                <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-3xl p-6 flex items-center justify-between">
-                  <div className="text-sm text-emerald-200">Setup complete. Defaults are saved and will resume automatically.</div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => setActiveScreen('settings')}
-                      className="px-5 py-2 rounded-3xl border border-emerald-400/40 text-emerald-100 hover:bg-emerald-500/20 transition-colors"
-                    >
-                      Open settings
-                    </button>
-                    <button
-                      onClick={handleOnboardingReset}
-                      className="px-5 py-2 rounded-3xl border border-zinc-600 text-zinc-300 hover:border-zinc-500 transition-colors"
-                    >
-                      Reset setup
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              <button onClick={() => setActiveScreen('publish-studio')} className="mt-8 px-8 py-4 bg-emerald-600 rounded-3xl font-medium hover:bg-emerald-700 transition-colors">
-                Create New Listing →
-              </button>
+                );
+              })}
             </div>
-          )}
-
-          {activeScreen === 'publish-studio' && (
-            <div className="space-y-8">
-              <div className="text-3xl font-semibold">Listing Publish Studio</div>
-              <div className="grid grid-cols-3 gap-8">
-                {/* Left: Form */}
-                <div className="col-span-2 space-y-6">
-                  <div className="bg-zinc-900 rounded-3xl p-8 space-y-5 border border-zinc-800">
-                    <div className="flex items-center justify-between gap-4">
-                      <div>
-                        <div className="text-xl font-semibold">Guided Publish Sequence</div>
-                        <div className="text-sm text-zinc-400 mt-1">
-                          Step-by-step flow for non-technical operators. No guesswork.
-                        </div>
-                        <div className="text-xs text-zinc-500 mt-2">
-                          Session: {guidedSessionId || 'initializing...'}
-                        </div>
-                      </div>
-                      <button
-                        onClick={startGuidedPublishFlow}
-                        disabled={guidedBusy}
-                        className="px-5 py-3 rounded-3xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 transition-colors"
-                      >
-                        {guidedFlow ? 'Restart Flow' : 'Start Flow'}
-                      </button>
-                    </div>
-
-                    {guidedFlow && (
-                      <div className="space-y-4">
-                        <div className="flex items-center gap-3 text-sm">
-                          <span className={`px-3 py-1 rounded-3xl ${guidedFlow.status === 'completed' ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/15 text-amber-300'}`}>
-                            {guidedFlow.status === 'completed' ? 'Completed' : 'In Progress'}
-                          </span>
-                          <span className="text-zinc-400">
-                            {guidedFlow.progressPercent}% complete
-                          </span>
-                        </div>
-
-                        {guidedFlow.status === 'active' && currentGuidedStep && (
-                          <div className="bg-zinc-800 rounded-2xl p-5 space-y-4">
-                            <div className="text-sm text-zinc-300">
-                              Step {currentGuidedStep.order}: {currentGuidedStep.label}
-                            </div>
-                            <div className="text-zinc-200">{currentGuidedStep.prompt}</div>
-                            {currentGuidedStep.options && currentGuidedStep.options.length > 0 && (
-                              <div className="flex flex-wrap gap-2">
-                                {currentGuidedStep.options.map((option) => (
-                                  <button
-                                    key={option.value}
-                                    onClick={() => setGuidedAnswerInput(option.value)}
-                                    className="px-4 py-2 rounded-3xl border border-zinc-600 hover:border-zinc-300 text-sm transition-colors"
-                                  >
-                                    {option.label}
-                                  </button>
-                                ))}
-                              </div>
-                            )}
-                            <input
-                              value={guidedAnswerInput}
-                              onChange={(e) => setGuidedAnswerInput(e.target.value)}
-                              placeholder={currentGuidedStep.placeholder || 'Type your answer'}
-                              className="w-full bg-zinc-900 rounded-3xl py-3 px-5 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                            />
-                            <button
-                              onClick={answerGuidedStep}
-                              disabled={guidedBusy}
-                              className="px-5 py-3 rounded-3xl bg-white text-black hover:bg-zinc-200 disabled:opacity-60 transition-colors"
-                            >
-                              Save Step
-                            </button>
-                          </div>
-                        )}
-
-                        {guidedFlow.status === 'completed' && guidedFlow.completion && (
-                          <div className="bg-zinc-800 rounded-2xl p-5 space-y-4">
-                            <div className="text-sm text-zinc-300">Generated request</div>
-                            <div className="text-zinc-100">{guidedFlow.completion.generatedMessage}</div>
-                            <div className="text-sm text-zinc-400">Recommended tools</div>
-                            <div className="flex flex-wrap gap-2">
-                              {guidedFlow.completion.recommendedPlan.map((item) => (
-                                <span key={`${item.tool}-${item.reason}`} className="px-3 py-1 rounded-3xl bg-zinc-700 text-xs text-zinc-200">
-                                  {item.tool}
-                                </span>
-                              ))}
-                            </div>
-                            <button
-                              onClick={executeGuidedCompletion}
-                              disabled={guidedBusy}
-                              className="px-5 py-3 rounded-3xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 transition-colors"
-                            >
-                              Send To Agent Queue
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {guidedInfo && <div className="text-sm text-emerald-300">{guidedInfo}</div>}
-                    {guidedError && <div className="text-sm text-red-300">{guidedError}</div>}
-                  </div>
-
-                  <div className="bg-zinc-900 rounded-3xl p-8 space-y-6">
-                    <div className="text-sm uppercase tracking-widest text-zinc-500">Manual Publish Form</div>
-                    <div>
-                      <label className="block text-sm font-medium mb-3">Listing Title</label>
-                      <input 
-                        type="text" 
-                        value={formData.title}
-                        onChange={(e) => setFormData({...formData, title: e.target.value})}
-                        className="w-full bg-zinc-800 rounded-3xl py-4 px-6 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium mb-3">Description</label>
-                      <textarea 
-                        value={formData.description}
-                        onChange={(e) => setFormData({...formData, description: e.target.value})}
-                        className="w-full bg-zinc-800 rounded-3xl py-4 px-6 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 h-32"
-                      />
-                    </div>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-sm font-medium mb-3">Price (Cr)</label>
-                        <input 
-                          type="text" 
-                          value={formData.price}
-                          onChange={(e) => setFormData({...formData, price: e.target.value})}
-                          className="w-full bg-zinc-800 rounded-3xl py-4 px-6 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium mb-3">Location</label>
-                        <input 
-                          type="text" 
-                          value={formData.location}
-                          onChange={(e) => setFormData({...formData, location: e.target.value})}
-                          className="w-full bg-zinc-800 rounded-3xl py-4 px-6 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                        />
-                      </div>
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium mb-3">Publish to Portals</label>
-                      <div className="flex gap-4">
-                        {(['99acres', 'MagicBricks'] as const).map(portal => (
-                          <label key={portal} className="flex items-center gap-2 cursor-pointer">
-                            <input 
-                              type="checkbox"
-                              checked={formData.portals.includes(portal)}
-                              onChange={(e) => {
-                                if (e.target.checked) {
-                                  setFormData({...formData, portals: [...formData.portals, portal]});
-                                } else {
-                                  setFormData({...formData, portals: formData.portals.filter(p => p !== portal)});
-                                }
-                              }}
-                              className="w-4 h-4"
-                            />
-                            <span className="text-sm">{portal}</span>
-                          </label>
-                        ))}
-                      </div>
-                    </div>
-                    <label className="flex items-center gap-3 cursor-pointer">
-                      <input 
-                        type="checkbox"
-                        checked={formData.dryRun}
-                        onChange={(e) => setFormData({...formData, dryRun: e.target.checked})}
-                        className="w-4 h-4"
-                      />
-                      <span className="text-sm">Dry-run (preview only)</span>
-                    </label>
-                    <button 
-                      onClick={handlePublish}
-                      className="w-full py-4 bg-emerald-600 rounded-3xl font-medium hover:bg-emerald-700 transition-colors"
-                    >
-                      Publish Listing
-                    </button>
-                  </div>
-                </div>
-
-                {/* Right: Agent Session Flow */}
-                <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 flex flex-col h-fit">
-                  <div className="uppercase text-xs tracking-[2px] text-zinc-500 mb-4">LIVE AGENT SESSION #AS-3921</div>
-                  
-                  <div className="flex-1 space-y-6 overflow-auto pr-2 max-h-96">
-                    {currentAgentSession.map((msg, i) => (
-                      <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : ''}`}>
-                        <div className={`max-w-[85%] px-5 py-3 rounded-3xl text-sm ${msg.role === 'user' ? 'bg-emerald-600' : msg.role === 'agent' ? 'bg-zinc-800' : 'bg-amber-500/10 text-amber-400 border border-amber-500/30'}`}>
-                          {msg.text}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className="text-[10px] text-center text-zinc-500 mt-4">Uses post_to_99acres + post_to_magicbricks tools</div>
-                </div>
+            <div className="mt-4 rounded-2xl bg-slate-50 p-3 text-sm">
+              <p className="text-xs uppercase tracking-wide text-slate-500">Live Snapshot</p>
+              <div className="mt-2 space-y-1">
+                <div className="flex justify-between"><span>Opt-in</span><span className="font-semibold text-emerald-700">{consentStats.in}</span></div>
+                <div className="flex justify-between"><span>Opt-out</span><span className="font-semibold text-rose-700">{consentStats.out}</span></div>
+                <div className="flex justify-between"><span>Campaigns</span><span className="font-semibold">{campaignStats.total}</span></div>
+                <div className="flex justify-between"><span>Running</span><span className="font-semibold text-amber-700">{campaignStats.run}</span></div>
               </div>
             </div>
-          )}
+          </aside>
 
-          {activeScreen === 'publish-results' && (
-            <div>
-              <div className="flex justify-between items-center mb-8">
-                <div className="text-2xl font-semibold">Publish History</div>
-                <div className="flex gap-3">
-                  <button className="px-6 py-3 bg-zinc-800 rounded-3xl text-sm hover:bg-zinc-700 transition-colors">All Portals</button>
-                  <button className="px-6 py-3 bg-zinc-800 rounded-3xl text-sm hover:bg-zinc-700 transition-colors">Today</button>
+          <main className="space-y-4">
+            {screen === "dashboard" && (
+              <section className="space-y-4">
+                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                  <div className="surface-panel rounded-3xl p-4"><p className="text-xs uppercase text-slate-500">Consents</p><p className="mt-1 text-2xl font-semibold">{consentStats.total}</p></div>
+                  <div className="surface-panel rounded-3xl p-4"><p className="text-xs uppercase text-slate-500">Drafts</p><p className="mt-1 text-2xl font-semibold">{campaignStats.draft}</p></div>
+                  <div className="surface-panel rounded-3xl p-4"><p className="text-xs uppercase text-slate-500">Running</p><p className="mt-1 text-2xl font-semibold">{campaignStats.run}</p></div>
+                  <div className="surface-panel rounded-3xl p-4"><p className="text-xs uppercase text-slate-500">Role</p><p className="mt-1 text-lg font-semibold">{config.role}</p></div>
                 </div>
-              </div>
-
-              <div className="bg-zinc-900 rounded-3xl overflow-hidden">
-                <table className="w-full">
-                  <thead>
-                    <tr className="border-b border-zinc-800">
-                      <th className="text-left py-6 px-8 text-xs uppercase tracking-widest text-zinc-500">Date</th>
-                      <th className="text-left py-6 px-8 text-xs uppercase tracking-widest text-zinc-500">Listing</th>
-                      <th className="text-left py-6 px-8 text-xs uppercase tracking-widest text-zinc-500">Portal</th>
-                      <th className="text-left py-6 px-8 text-xs uppercase tracking-widest text-zinc-500">External ID</th>
-                      <th className="text-left py-6 px-8 text-xs uppercase tracking-widest text-zinc-500">Status</th>
-                      <th className="w-40"></th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-zinc-800">
-                    {publishResults.map(result => (
-                      <tr key={result.id} className="hover:bg-zinc-800/50 transition-colors">
-                        <td className="py-6 px-8 text-sm text-zinc-400">{result.date}</td>
-                        <td className="py-6 px-8 font-medium">{result.listingTitle}</td>
-                        <td className="py-6 px-8">
-                          <span className={`inline-block px-4 py-1 text-xs rounded-3xl ${result.portal === 'Both' ? 'bg-purple-500/20 text-purple-400' : result.portal === '99acres' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'}`}>
-                            {result.portal}
-                          </span>
-                        </td>
-                        <td className="py-6 px-8 font-mono text-sm text-zinc-400">{result.externalId}</td>
-                        <td className="py-6 px-8">
-                          {result.status === 'success' ? (
-                            <span className="inline-flex items-center gap-1.5 text-emerald-400 text-sm">
-                              <div className="w-2 h-2 bg-emerald-500 rounded-full" /> Success
-                            </span>
-                          ) : (
-                            <span className="text-red-400 text-sm">{result.reason}</span>
-                          )}
-                        </td>
-                        <td className="py-6 px-8">
-                          <button 
-                            onClick={() => alert('🔄 Retry initiated for ' + result.id)}
-                            className="text-xs bg-zinc-800 hover:bg-zinc-700 px-6 py-2 rounded-3xl transition-colors"
-                          >
-                            Retry
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {activeScreen === 'portal-status' && (
-            <div className="max-w-4xl mx-auto space-y-8">
-              <div className="text-3xl font-semibold mb-2">Publishing Connections</div>
-              <div className="text-zinc-400">These links let PropAI post listings to 99acres and MagicBricks.</div>
-              <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-5 text-sm text-zinc-300">
-                What to do: if either card below is not connected, open Settings and update your publish URL or API key.
-              </div>
-
-              {/* 99acres Adapter */}
-              <div className="bg-zinc-900 rounded-3xl p-8">
-                <div className="flex items-center justify-between mb-8">
-                  <div className="flex items-center gap-4">
-                    <div className="text-4xl">🇮🇳</div>
-                    <div>
-                      <div className="text-2xl font-semibold">99acres Adapter</div>
-                      <div className="text-emerald-400 text-sm">Posting endpoint</div>
-                    </div>
-                  </div>
-                  <div className="px-8 py-3 bg-emerald-500/10 text-emerald-400 rounded-3xl text-sm font-medium">CONNECTED • 99.8% uptime</div>
-                </div>
-                <div className="font-mono text-sm bg-black/50 p-5 rounded-2xl border border-zinc-800">
-                  {propaiEnv.PROPAI_LIVE_99ACRES_POST_URL.value}
-                </div>
-              </div>
-
-              {/* MagicBricks Adapter */}
-              <div className="bg-zinc-900 rounded-3xl p-8">
-                <div className="flex items-center justify-between mb-8">
-                  <div className="flex items-center gap-4">
-                    <div className="text-4xl">🏠</div>
-                    <div>
-                      <div className="text-2xl font-semibold">MagicBricks Adapter</div>
-                      <div className="text-emerald-400 text-sm">Posting endpoint</div>
-                    </div>
-                  </div>
-                  <div className="px-8 py-3 bg-emerald-500/10 text-emerald-400 rounded-3xl text-sm font-medium">CONNECTED • 99.9% uptime</div>
-                </div>
-                <div className="font-mono text-sm bg-black/50 p-5 rounded-2xl border border-zinc-800">
-                  {propaiEnv.PROPAI_LIVE_MAGICBRICKS_POST_URL.value}
-                </div>
-              </div>
-
-              {/* Live API Key Readiness */}
-              <div className="bg-gradient-to-br from-zinc-900 to-zinc-950 border border-emerald-500/30 rounded-3xl p-8">
-                <div className="uppercase text-xs tracking-widest mb-1">Publishing API Key</div>
-                <div className="font-mono text-lg break-all">{propaiEnv.PROPAI_LIVE_API_KEY.value}</div>
-                <div className="mt-6 flex items-center gap-2 text-emerald-400">
-                  <div className="w-4 h-4 bg-emerald-500 rounded-full" /> Fully ready for both adapters
-                </div>
-              </div>
-            </div>
-          )}
-
-          {activeScreen === 'connectors-center' && (
-            <div>
-              <div className="text-3xl font-semibold mb-3">Service Connections ({connectors.length})</div>
-              <div className="text-zinc-400 mb-8">Each card shows one service PropAI depends on. If a card says "Needs attention", click check now.</div>
-              <div className="grid grid-cols-3 gap-6">
-                {connectors.map(connector => (
-                  <div key={connector.id} className={`bg-zinc-900 rounded-3xl p-8 transition-all hover:-translate-y-1 ${connector.special ? 'ring-2 ring-offset-4 ring-offset-zinc-950 ring-emerald-500' : ''}`}>
-                    <div className="flex justify-between">
-                      <div className="text-2xl font-medium">{connector.name}</div>
-                      <div className={`px-5 py-1 text-xs rounded-3xl font-medium ${connector.status === 'healthy' ? 'bg-emerald-500/10 text-emerald-400' : connector.status === 'warning' ? 'bg-amber-500/10 text-amber-400' : 'bg-red-500/10 text-red-400'}`}>
-                        {CONNECTOR_STATUS_LABEL[connector.status]}
-                      </div>
-                    </div>
-                    <div className="mt-4 text-xs text-zinc-400">{CONNECTOR_HELP_TEXT[connector.id] || 'Connected service'}</div>
-                    <div className="mt-8 text-xs text-zinc-500">Last checked</div>
-                    <div className="text-4xl font-mono tracking-tighter text-white/70">{connector.lastPing}</div>
-                    
-                    {connector.special && (
-                      <div className="mt-6 text-[10px] text-emerald-400">• Explicit 99acres &amp; MagicBricks support</div>
-                    )}
-
-                    <button 
-                      onClick={() => testConnector(connector.id)}
-                      className="mt-10 w-full py-4 border border-zinc-700 hover:border-white rounded-3xl text-sm transition-colors"
-                    >
-                      Check now
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {activeScreen === 'whatsapp-connect' && (
-            <div className="max-w-md mx-auto bg-zinc-900 rounded-3xl p-10 text-center">
-              <div className="mx-auto w-24 h-24 bg-emerald-600/10 rounded-full flex items-center justify-center mb-8">
-                <MessageCircle className="w-12 h-12 text-emerald-400" />
-              </div>
-              <div className="text-3xl font-semibold mb-2">WhatsApp Connected</div>
-              <div className="text-emerald-400 mb-8">WACLI + WPPConnect Legacy</div>
-              <button className="w-full py-5 bg-emerald-600 rounded-3xl font-medium hover:bg-emerald-700 transition-colors">Refresh Connection</button>
-              <div className="mt-12 text-xs text-left space-y-6">
-                <div>✅ Multi-device support active</div>
-                <div>✅ Webhook verified at /whatsapp/webhook</div>
-                <div>✅ 142 active sessions</div>
-              </div>
-            </div>
-          )}
-
-          {activeScreen === 'pairing-approval' && (
-            <div className="bg-zinc-900 rounded-3xl p-8 max-w-2xl mx-auto">
-              <div className="text-xl font-medium mb-6">Pending Pairing Codes</div>
-              {['PA-8372', 'PA-8371'].map(code => (
-                <div key={code} className="flex justify-between items-center py-6 border-b border-zinc-800 last:border-0">
-                  <div>{code}</div>
-                  <button onClick={() => approvePairing(code)} className="bg-emerald-600 px-8 py-3 rounded-3xl text-sm hover:bg-emerald-700 transition-colors">Approve</button>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {activeScreen === 'approvals-queue' && (
-            <div className="max-w-2xl mx-auto bg-zinc-900 border border-zinc-800 rounded-3xl p-8 space-y-4">
-              <div className="text-2xl font-semibold">Approval Queue</div>
-              <div className="text-zinc-300">Nothing runs silently. You review sensitive actions before they go live.</div>
-              <div className="grid grid-cols-3 gap-4 pt-2">
-                <div className="bg-zinc-800 rounded-2xl p-4">
-                  <div className="text-xs text-zinc-400">Pending now</div>
-                  <div className="text-2xl font-semibold">0</div>
-                </div>
-                <div className="bg-zinc-800 rounded-2xl p-4">
-                  <div className="text-xs text-zinc-400">High priority</div>
-                  <div className="text-2xl font-semibold">0</div>
-                </div>
-                <div className="bg-zinc-800 rounded-2xl p-4">
-                  <div className="text-xs text-zinc-400">Needs review first</div>
-                  <div className="text-2xl font-semibold">None</div>
-                </div>
-              </div>
-              <div className="text-sm text-zinc-400">When actions arrive, they will appear here with clear approve/deny buttons.</div>
-            </div>
-          )}
-
-          {activeScreen === 'agent-session' && (
-            <div className="bg-zinc-900 rounded-3xl p-8 max-w-2xl">
-              <div className="font-mono text-xs mb-4 text-emerald-400">CURRENT SESSION THREAD</div>
-              {currentAgentSession.map((m,i) => <div key={i} className="mb-4 text-sm">{m.text}</div>)}
-              <button onClick={() => setActiveScreen('publish-studio')} className="mt-8 text-emerald-400 hover:text-emerald-300 transition-colors">Back to Studio →</button>
-            </div>
-          )}
-
-          {activeScreen === 'session-list' && <div className="text-4xl text-center py-40 text-zinc-700">All Agent Sessions (list + open detail)</div>}
-
-          {activeScreen === 'group-intake' && (
-            <div className="max-w-lg mx-auto bg-zinc-900 rounded-3xl p-10 space-y-8">
-              <input placeholder="Content" className="w-full bg-zinc-800 rounded-3xl py-5 px-7 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500" defaultValue="3BHK premium listing" />
-              <select className="w-full bg-zinc-800 rounded-3xl py-5 px-7 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500">
-                <option>property</option>
-              </select>
-              <button onClick={addToQueue} className="w-full py-5 bg-emerald-600 rounded-3xl font-medium hover:bg-emerald-700 transition-colors">Add to Queue</button>
-            </div>
-          )}
-
-          {activeScreen === 'group-queue' && (
-            <div className="space-y-4">
-              <div className="text-zinc-300">Outbox queue shows what is waiting to be sent, currently sending, done, or needing retry.</div>
-              <div className="bg-zinc-900 rounded-3xl">
-                <div className="flex border-b border-zinc-800">
-                  {(['queued', 'processing', 'sent', 'failed'] as const).map(s => (
-                    <button key={s} className={`flex-1 py-5 text-sm font-medium transition-colors ${queueItems[0]?.status === s ? 'border-b-2 border-white' : 'text-zinc-400'}`}>
-                      {QUEUE_STATUS_LABEL[s]} ({queueItems.filter(i => i.status === s).length})
-                    </button>
-                  ))}
-                </div>
-                {queueItems.map(item => (
-                  <div key={item.id} className="p-8 border-b border-zinc-800 flex justify-between items-center">
-                    <div>
-                      <div>{item.content}</div>
-                      <div className="text-xs text-zinc-400 mt-1">Status: {QUEUE_STATUS_LABEL[item.status]} · Target: {item.targets}</div>
-                    </div>
-                    <button onClick={() => alert('Requeued')} className="text-xs px-6 py-2 border border-zinc-700 rounded-3xl hover:border-white transition-colors">Try again</button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {activeScreen === 'dispatch-center' && (
-            <div className="max-w-md mx-auto text-center py-20">
-              <div className="text-zinc-300 mb-8">Use this when you want to send due items immediately.</div>
-              <button onClick={() => alert('🚀 Manual dispatch triggered')} className="bg-white text-xl text-black px-16 py-8 rounded-3xl font-semibold hover:bg-zinc-100 transition-colors">Send due items now</button>
-              <div className="mt-16 text-zinc-500">Last auto-run: 11 minutes ago</div>
-            </div>
-          )}
-
-          {activeScreen === 'wacli-tools' && (
-            <div>
-              <div className="text-zinc-300 mb-6">WhatsApp Actions help you send a message, search chats, and run quick connection checks.</div>
-              <div className="flex border-b border-zinc-700 mb-8">
-                {(['send','search','chats','doctor'] as const).map(tab => (
-                  <button 
-                    key={tab}
-                    onClick={() => setActiveWacliTab(tab)}
-                    className={`px-10 py-5 font-medium border-b-2 transition-colors ${activeWacliTab === tab ? 'border-white' : 'border-transparent text-zinc-400'}`}
-                  >
-                    {tab.toUpperCase()}
-                  </button>
-                ))}
-              </div>
-              {activeWacliTab === 'send' && (
-                <div className="max-w-lg">
-                  <input placeholder="Recipient phone or group ID" className="w-full rounded-3xl py-6 px-8 bg-zinc-900 mb-4 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500" />
-                  <textarea placeholder="Type your message" className="w-full h-52 rounded-3xl py-6 px-8 bg-zinc-900 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500" />
-                  <button onClick={() => setWacliOutput('✅ Message sent successfully')} className="mt-6 w-full py-6 bg-emerald-600 rounded-3xl hover:bg-emerald-700 transition-colors">Send message</button>
-                  {wacliOutput && <div className="mt-6 text-emerald-400 text-center font-medium">{wacliOutput}</div>}
-                </div>
-              )}
-            </div>
-          )}
-
-          {activeScreen === 'queue-runtime' && (
-            <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-3xl p-12 max-w-lg mx-auto text-center">
-              <div className="text-6xl mb-6">✅</div>
-              <div className="text-3xl font-medium">Background Task Engine is healthy</div>
-              <div className="text-emerald-400 mt-3">Auto-send queue is running normally</div>
-              <div className="text-zinc-300 mt-4">No action needed right now.</div>
-            </div>
-          )}
-
-          {activeScreen === 'properties' && <div className="text-center py-40 text-6xl text-zinc-700 font-light">Properties Inventory<br />(/properties table)</div>}
-
-          {activeScreen === 'system-health' && (
-            <div className="max-w-3xl space-y-6">
-              <div className="text-zinc-300">Quick health check for core services.</div>
-              <div className="grid grid-cols-2 gap-6">
-                <div className="bg-zinc-900 rounded-3xl p-8">
-                  <div className="text-sm text-zinc-400 mb-2">App status</div>
-                  <div className="text-2xl font-semibold text-emerald-400">Running</div>
-                </div>
-                <div className="bg-zinc-900 rounded-3xl p-8">
-                  <div className="text-sm text-zinc-400 mb-2">Webhook status</div>
-                  <div className="text-2xl font-semibold text-emerald-400">Connected</div>
-                </div>
-              </div>
-              <div className="bg-zinc-900 rounded-3xl p-5 text-sm text-zinc-400">
-                If either item is not green, go to Service Connections and run checks.
-              </div>
-            </div>
-          )}
-
-          {activeScreen === 'settings' && (
-            <div className="max-w-2xl space-y-8">
-              <div className="bg-zinc-900 rounded-3xl p-8 space-y-6">
-                <div className="font-medium text-lg">Business Profile Defaults</div>
-                <div>
-                  <label className="block text-sm font-medium mb-3">Default Price Prefix</label>
-                  <input
-                    className="w-full rounded-3xl py-4 px-6 bg-zinc-800 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                    placeholder="Cr"
-                    value={settingsForm.businessPricePrefix}
-                    onChange={(e) => setSettingsForm({ ...settingsForm, businessPricePrefix: e.target.value })}
-                  />
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium mb-3">Operator Name</label>
-                    <input
-                      value={operatorProfile.name}
-                      onChange={(e) => setOperatorProfile({ ...operatorProfile, name: e.target.value })}
-                      placeholder="Name"
-                      className="w-full rounded-3xl py-4 px-6 bg-zinc-800 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium mb-3">Default Phone</label>
-                    <input
-                      value={operatorProfile.phone}
-                      onChange={(e) => setOperatorProfile({ ...operatorProfile, phone: e.target.value })}
-                      placeholder="+91..."
-                      className="w-full rounded-3xl py-4 px-6 bg-zinc-800 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium mb-3">Default City</label>
-                    <input
-                      value={operatorProfile.city}
-                      onChange={(e) => setOperatorProfile({ ...operatorProfile, city: e.target.value })}
-                      placeholder="City"
-                      className="w-full rounded-3xl py-4 px-6 bg-zinc-800 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium mb-3">Language</label>
-                    <select
-                      value={operatorProfile.lang}
-                      onChange={(e) => setOperatorProfile({ ...operatorProfile, lang: e.target.value as OperatorLanguage })}
-                      className="w-full rounded-3xl py-4 px-6 bg-zinc-800 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                    >
-                      <option value="en">en</option>
-                      <option value="hi">hi</option>
-                      <option value="hinglish">hinglish</option>
-                    </select>
+                <div className="surface-panel rounded-3xl p-4">
+                  <h2 className="mb-3 text-base font-semibold">Latest Campaigns</h2>
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full text-sm">
+                      <thead><tr className="text-left text-xs uppercase text-slate-500"><th className="pb-2 pr-3">Name</th><th className="pb-2 pr-3">Status</th><th className="pb-2 pr-3">Audience</th><th className="pb-2 pr-3">Updated</th></tr></thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {campaigns.slice(0, 8).map((c) => <tr key={c.id}><td className="py-2 pr-3"><div className="font-medium">{c.name}</div><div className="text-xs text-slate-500">{c.id}</div></td><td className="py-2 pr-3"><span className={`rounded-full px-2 py-0.5 text-xs ${statusClass(c.status)}`}>{c.status}</span></td><td className="py-2 pr-3">{c.audience.length}</td><td className="py-2 pr-3 text-slate-600">{fmt(c.lastRunAtIso || c.createdAtIso)}</td></tr>)}
+                        {campaigns.length === 0 && <tr><td colSpan={4} className="py-6 text-center text-slate-500">No campaigns yet.</td></tr>}
+                      </tbody>
+                    </table>
                   </div>
                 </div>
-                <div className="space-y-3">
-                  <label className="block text-sm font-medium">Safety Mode</label>
-                  <div className="grid grid-cols-3 gap-3">
-                    {SAFETY_MODE_ORDER.map((modeId) => (
-                      <button
-                        key={modeId}
-                        onClick={() => setSafetyMode(modeId)}
-                        className={`rounded-3xl border p-3 text-left transition-colors ${safetyMode === modeId ? 'border-emerald-400 bg-emerald-500/10' : 'border-zinc-700 hover:border-zinc-500'}`}
-                      >
-                        <div className="text-sm font-medium">{SAFETY_MODE_META[modeId].label}</div>
-                        <div className="text-[11px] text-zinc-400 mt-1">{SAFETY_MODE_META[modeId].subtitle}</div>
-                      </button>
-                    ))}
-                  </div>
+              </section>
+            )}
+
+            {screen === "consents" && (
+              <section className="space-y-4">
+                <div className="grid gap-4 xl:grid-cols-3">
+                  <div className="surface-panel rounded-3xl p-4"><h2 className="text-base font-semibold">Add Consent</h2><input value={addPhone} onChange={(e) => setAddPhone(e.target.value)} placeholder="+919876543210" className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm" /><button type="button" onClick={() => void addConsent()} disabled={Boolean(busy.add)} className="mt-2 inline-flex items-center rounded-xl bg-emerald-600 px-3 py-2 text-sm text-white disabled:opacity-60">{busy.add ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <ShieldCheck className="mr-1 h-4 w-4" />}Add</button></div>
+                  <div className="surface-panel rounded-3xl p-4"><h2 className="text-base font-semibold">Revoke Consent</h2><input value={revokePhone} onChange={(e) => setRevokePhone(e.target.value)} placeholder="+919876543210" className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm" /><button type="button" onClick={() => void revokeConsent()} disabled={Boolean(busy.revoke)} className="mt-2 inline-flex items-center rounded-xl bg-rose-600 px-3 py-2 text-sm text-white disabled:opacity-60">{busy.revoke ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <AlertCircle className="mr-1 h-4 w-4" />}Revoke</button></div>
+                  <div className="surface-panel rounded-3xl p-4"><h2 className="text-base font-semibold">Lookup</h2><input value={lookupPhone} onChange={(e) => setLookupPhone(e.target.value)} placeholder="+919876543210" className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm" /><button type="button" onClick={() => void lookupConsent()} disabled={Boolean(busy.lookup)} className="mt-2 inline-flex items-center rounded-xl bg-sky-600 px-3 py-2 text-sm text-white disabled:opacity-60">Check</button>{lookupStatus && <div className="mt-2 rounded-xl bg-slate-50 p-2 text-xs">{lookupStatus}</div>}</div>
                 </div>
-              </div>
-
-              <div className="bg-zinc-900 rounded-3xl p-8 space-y-8">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="font-medium text-lg">LLM Providers</div>
-                    <div className="text-sm text-zinc-400 mt-1">Configure cloud fallback providers used by chat and agent flows.</div>
-                  </div>
-                  <div className="px-4 py-2 bg-zinc-800 rounded-3xl text-xs text-zinc-300">
-                    Priority: OpenRouter → xAI → Ollama
-                  </div>
+                <div className="surface-panel rounded-3xl p-4">
+                  <div className="mb-3 flex items-center justify-between"><h2 className="text-base font-semibold">Consent Records</h2><div className="flex gap-2"><select value={consentFilter} onChange={(e) => setConsentFilter(e.target.value as "all" | ConsentStatus)} className="rounded-xl border border-slate-200 px-2 py-1.5 text-sm"><option value="all">all</option><option value="opted_in">opted_in</option><option value="opted_out">opted_out</option></select><button type="button" onClick={() => void loadConsents()} className="rounded-xl border border-slate-200 px-3 py-1.5 text-sm">Refresh</button></div></div>
+                  <div className="overflow-x-auto"><table className="min-w-full text-sm"><thead><tr className="text-left text-xs uppercase text-slate-500"><th className="pb-2 pr-3">Phone</th><th className="pb-2 pr-3">Status</th><th className="pb-2 pr-3">Purpose</th><th className="pb-2 pr-3">Updated</th></tr></thead><tbody className="divide-y divide-slate-100">{consents.map((c) => <tr key={c.phoneE164}><td className="py-2 pr-3 font-medium">{c.phoneE164}</td><td className="py-2 pr-3"><span className={`rounded-full px-2 py-0.5 text-xs ${c.status === "opted_in" ? "bg-emerald-100 text-emerald-800" : "bg-rose-100 text-rose-800"}`}>{c.status}</span></td><td className="py-2 pr-3">{c.purpose}</td><td className="py-2 pr-3 text-slate-600">{fmt(c.updatedAtIso)}</td></tr>)}{consents.length === 0 && <tr><td colSpan={4} className="py-6 text-center text-slate-500">No records.</td></tr>}</tbody></table></div>
                 </div>
+              </section>
+            )}
 
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="col-span-2">
-                    <div className="text-sm font-medium mb-3">OpenRouter API Key</div>
-                    <input
-                      type="password"
-                      value={settingsForm.openrouterApiKey}
-                      onChange={(e) => setSettingsForm({ ...settingsForm, openrouterApiKey: e.target.value })}
-                      placeholder="sk-or-..."
-                      className="w-full rounded-3xl py-4 px-6 bg-zinc-800 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                    />
+            {screen === "campaign_create" && (
+              <section className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+                <div className="surface-panel rounded-3xl p-4">
+                  <h2 className="text-base font-semibold">Create Campaign</h2>
+                  <div className="mt-3 grid gap-2 md:grid-cols-2">
+                    <input value={campaignForm.name} onChange={(e) => setCampaignForm((p) => ({ ...p, name: e.target.value }))} placeholder="name" className="rounded-xl border border-slate-200 px-3 py-2 text-sm" />
+                    <input value={campaignForm.client} onChange={(e) => setCampaignForm((p) => ({ ...p, client: e.target.value }))} placeholder="client" className="rounded-xl border border-slate-200 px-3 py-2 text-sm" />
+                    <input value={campaignForm.templateName} onChange={(e) => setCampaignForm((p) => ({ ...p, templateName: e.target.value }))} placeholder="templateName" className="rounded-xl border border-slate-200 px-3 py-2 text-sm" />
+                    <input value={campaignForm.language} onChange={(e) => setCampaignForm((p) => ({ ...p, language: e.target.value }))} placeholder="en" className="rounded-xl border border-slate-200 px-3 py-2 text-sm" />
+                    <select value={campaignForm.category} onChange={(e) => { const category = e.target.value as CampaignCategory; setCampaignForm((p) => ({ ...p, category, consentMode: category === "marketing" ? "required" : "optional", requireApproval: category === "marketing" })); }} className="rounded-xl border border-slate-200 px-3 py-2 text-sm"><option value="marketing">marketing</option><option value="utility">utility</option></select>
+                    <select value={campaignForm.consentMode} onChange={(e) => setCampaignForm((p) => ({ ...p, consentMode: e.target.value as ConsentMode }))} className="rounded-xl border border-slate-200 px-3 py-2 text-sm"><option value="required">required</option><option value="optional">optional</option><option value="disabled">disabled</option></select>
                   </div>
-                  <div className="col-span-2">
-                    <div className="text-sm font-medium mb-3">OpenRouter Model</div>
-                    <select
-                      value={settingsForm.openrouterModel}
-                      onChange={(e) => setSettingsForm({ ...settingsForm, openrouterModel: e.target.value })}
-                      className="w-full rounded-3xl py-4 px-6 bg-zinc-800 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                    >
-                      {OPENROUTER_MODELS.map((modelId) => (
-                        <option key={modelId} value={modelId}>
-                          {modelId}
-                        </option>
-                      ))}
-                    </select>
-                    <div className="text-xs text-zinc-500 mt-2">Model selection is attached to this API key configuration.</div>
-                  </div>
+                  <input value={campaignForm.reraProjectId} onChange={(e) => setCampaignForm((p) => ({ ...p, reraProjectId: e.target.value }))} placeholder="reraProjectId" className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm" />
+                  <textarea value={campaignForm.audienceRaw} onChange={(e) => setCampaignForm((p) => ({ ...p, audienceRaw: e.target.value }))} rows={6} placeholder="+919..., +918..." className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm" />
+                  <label className="mt-2 inline-flex items-center gap-2 text-sm"><input type="checkbox" checked={campaignForm.requireApproval} onChange={(e) => setCampaignForm((p) => ({ ...p, requireApproval: e.target.checked }))} />requireApproval</label>
+                  <div className="mt-3"><button type="button" onClick={() => void createCampaign()} disabled={Boolean(busy.create)} className="inline-flex items-center rounded-xl bg-emerald-600 px-3 py-2 text-sm text-white disabled:opacity-60">{busy.create ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Send className="mr-1 h-4 w-4" />}Create Draft</button></div>
                 </div>
+                <div className="surface-panel rounded-3xl p-4"><h3 className="text-base font-semibold">Preview</h3><div className="mt-3 space-y-1 text-sm"><div className="flex justify-between"><span>audience</span><span className="font-semibold">{audiencePreview.length}</span></div><div className="flex justify-between"><span>category</span><span className="font-semibold">{campaignForm.category}</span></div><div className="flex justify-between"><span>consent</span><span className="font-semibold">{campaignForm.consentMode}</span></div></div></div>
+              </section>
+            )}
 
-                <div className="h-px bg-zinc-800" />
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="col-span-2">
-                    <div className="text-sm font-medium mb-3">xAI API Key</div>
-                    <input
-                      type="password"
-                      value={settingsForm.xaiApiKey}
-                      onChange={(e) => setSettingsForm({ ...settingsForm, xaiApiKey: e.target.value })}
-                      placeholder="xai-..."
-                      className="w-full rounded-3xl py-4 px-6 bg-zinc-800 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                    />
-                  </div>
-                  <div className="col-span-2">
-                    <div className="text-sm font-medium mb-3">xAI Model</div>
-                    <select
-                      value={settingsForm.xaiModel}
-                      onChange={(e) => setSettingsForm({ ...settingsForm, xaiModel: e.target.value })}
-                      className="w-full rounded-3xl py-4 px-6 bg-zinc-800 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                    >
-                      {XAI_MODELS.map((modelId) => (
-                        <option key={modelId} value={modelId}>
-                          {modelId}
-                        </option>
-                      ))}
-                    </select>
-                    <div className="text-xs text-zinc-500 mt-2">Model selection is attached to this API key configuration.</div>
-                  </div>
+            {screen === "campaign_ops" && (
+              <section className="grid gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
+                <div className="surface-panel rounded-3xl p-4"><div className="mb-2 flex items-center justify-between"><h2 className="text-base font-semibold">Campaigns</h2><button type="button" onClick={() => void loadCampaigns()} className="rounded-xl border border-slate-200 px-2 py-1 text-xs">Refresh</button></div><div className="space-y-2">{campaigns.map((c) => <button key={c.id} type="button" onClick={() => setSelectedCampaignId(c.id)} className={`w-full rounded-xl border px-3 py-2 text-left ${selectedCampaignId === c.id ? "border-emerald-300 bg-emerald-50" : "border-slate-200 bg-white hover:bg-slate-50"}`}><div className="flex items-center justify-between"><span className="truncate text-sm font-medium">{c.name}</span><span className={`rounded-full px-2 py-0.5 text-[11px] ${statusClass(c.status)}`}>{c.status}</span></div><p className="text-xs text-slate-500">{c.id}</p></button>)}{campaigns.length === 0 && <p className="text-sm text-slate-500">No campaigns.</p>}</div></div>
+                <div className="space-y-4">
+                  <div className="surface-panel rounded-3xl p-4"><h2 className="text-base font-semibold">Selected Campaign</h2>{selectedCampaign ? <div className="mt-3 space-y-2 text-sm"><div className="rounded-xl bg-slate-50 p-3"><p className="font-medium">{selectedCampaign.name}</p><p className="text-xs text-slate-500">{selectedCampaign.id}</p><p className="text-xs">audience={selectedCampaign.audience.length}</p><p className="text-xs">consentMode={selectedCampaign.compliance.consentMode}</p></div><div><div className="mb-1 flex justify-between text-xs"><span>Run Progress</span><span>{progress}%</span></div><div className="h-2 rounded-full bg-slate-200"><div className="h-2 rounded-full bg-emerald-500" style={{ width: `${Math.max(0, Math.min(100, progress))}%` }} /></div></div>{selectedCampaign.lastPolicyCheck && <div className="rounded-xl border border-slate-200 p-2 text-xs">preflight={selectedCampaign.lastPolicyCheck.ok ? "ok" : "blocked"} at {fmt(selectedCampaign.lastPolicyCheck.atIso)}</div>}</div> : <p className="mt-2 text-sm text-slate-500">Select a campaign.</p>}</div>
+                  <div className="surface-panel rounded-3xl p-4"><h3 className="text-base font-semibold">Controls</h3><div className="mt-2 flex flex-wrap items-center gap-2"><button type="button" onClick={() => void preflightCampaign()} disabled={!selectedCampaignId || Boolean(busy.preflight)} className="inline-flex items-center rounded-xl bg-sky-600 px-3 py-2 text-sm text-white disabled:opacity-60"><FileCheck2 className="mr-1 h-4 w-4" />Preflight</button><button type="button" onClick={() => void approveCampaign()} disabled={!selectedCampaignId || Boolean(busy.approve)} className="inline-flex items-center rounded-xl bg-indigo-600 px-3 py-2 text-sm text-white disabled:opacity-60"><ShieldCheck className="mr-1 h-4 w-4" />Approve</button><label className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-2 py-1 text-xs"><input type="checkbox" checked={dryRun} onChange={(e) => setDryRun(e.target.checked)} />dryRun</label><button type="button" onClick={() => void runCampaign()} disabled={!selectedCampaignId || Boolean(busy.run)} className="inline-flex items-center rounded-xl bg-emerald-600 px-3 py-2 text-sm text-white disabled:opacity-60">{busy.run ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <PlayCircle className="mr-1 h-4 w-4" />}Run</button></div><div className="mt-2 grid gap-2 md:grid-cols-2"><input value={approvedBy} onChange={(e) => setApprovedBy(e.target.value)} placeholder="approvedBy" className="rounded-xl border border-slate-200 px-3 py-2 text-sm" /><input value={approvalNote} onChange={(e) => setApprovalNote(e.target.value)} placeholder="note" className="rounded-xl border border-slate-200 px-3 py-2 text-sm" /></div></div>
+                  <div className="surface-panel rounded-3xl p-4"><h3 className="text-base font-semibold">Run Recipients</h3><div className="mt-2 overflow-x-auto"><table className="min-w-full text-sm"><thead><tr className="text-left text-xs uppercase text-slate-500"><th className="pb-2 pr-3">phone</th><th className="pb-2 pr-3">action</th><th className="pb-2 pr-3">reason</th></tr></thead><tbody className="divide-y divide-slate-100">{runRecipients.map((r) => <tr key={`${r.phone}-${r.action}-${r.reason || ""}`}><td className="py-2 pr-3">{r.phone}</td><td className="py-2 pr-3">{r.action}</td><td className="py-2 pr-3 text-slate-600">{r.reason || "-"}</td></tr>)}{runRecipients.length === 0 && <tr><td colSpan={3} className="py-5 text-center text-slate-500">No run output yet.</td></tr>}</tbody></table></div></div>
                 </div>
+              </section>
+            )}
 
-                <button
-                  onClick={saveSettings}
-                  className="w-full py-4 bg-white text-black rounded-3xl hover:bg-zinc-100 transition-colors font-medium"
-                >
-                  Save Settings
-                </button>
-                {settingsSavedAt && (
-                  <div className="text-xs text-emerald-400 text-center">Saved at {settingsSavedAt}</div>
-                )}
-              </div>
-            </div>
-          )}
+            {screen === "intent_lab" && (
+              <section className="grid gap-4 xl:grid-cols-[1fr_0.9fr]">
+                <div className="surface-panel rounded-3xl p-4"><h2 className="text-base font-semibold">Intent Lab</h2><textarea value={intentText} onChange={(e) => setIntentText(e.target.value)} rows={7} placeholder="Send me 2BHK pricing in Whitefield" className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm" /><div className="mt-2 grid gap-2 md:grid-cols-[auto_1fr]"><label className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm"><input type="checkbox" checked={intentUseAi} onChange={(e) => setIntentUseAi(e.target.checked)} />useAi</label><input value={intentModel} onChange={(e) => setIntentModel(e.target.value)} placeholder="model override" className="rounded-xl border border-slate-200 px-3 py-2 text-sm" /></div><button type="button" onClick={() => void classifyIntent()} disabled={Boolean(busy.intent)} className="mt-2 inline-flex items-center rounded-xl bg-emerald-600 px-3 py-2 text-sm text-white disabled:opacity-60">{busy.intent ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <FlaskConical className="mr-1 h-4 w-4" />}Classify</button></div>
+                <div className="surface-panel rounded-3xl p-4"><h3 className="text-base font-semibold">Output</h3>{intentResult ? <div className="mt-2 space-y-2 text-sm"><div className="rounded-xl bg-slate-50 p-3"><p>intent: <span className="font-semibold">{intentResult.intent}</span></p><p>confidence: <span className="font-semibold">{Math.round(intentResult.confidence * 100)}%</span></p><p>route: <span className="font-semibold">{intentResult.route}</span></p><p>provider: <span className="font-semibold">{intentResult.provider}</span></p></div><pre className="max-h-64 overflow-auto rounded-xl bg-slate-900 p-3 text-xs text-emerald-200">{JSON.stringify(intentResult.fields, null, 2)}</pre></div> : <p className="mt-2 text-sm text-slate-500">Run classification to inspect fields.</p>}</div>
+              </section>
+            )}
+
+            {screen === "audit" && (
+              <section className="surface-panel rounded-3xl p-4"><div className="mb-2 flex items-center justify-between"><h2 className="text-base font-semibold">Audit Timeline</h2><button type="button" onClick={clearAudit} className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs">Clear</button></div><div className="space-y-2">{audit.map((a) => <div key={a.id} className="rounded-xl border border-slate-200 bg-white p-3"><div className="flex items-center justify-between"><p className="text-sm font-medium">{a.action}</p><p className="text-xs text-slate-500">{fmt(a.atIso)}</p></div><p className="mt-1 text-sm text-slate-700">{a.details}</p></div>)}{audit.length === 0 && <p className="text-sm text-slate-500">No events yet.</p>}</div></section>
+            )}
+
+            {screen === "settings" && (
+              <section className="grid gap-4 xl:grid-cols-[1fr_0.9fr]">
+                <div className="surface-panel rounded-3xl p-4"><h2 className="text-base font-semibold">Settings</h2><div className="mt-2 space-y-2"><input value={draftConfig.baseUrl} onChange={(e) => setDraftConfig((p) => ({ ...p, baseUrl: e.target.value }))} placeholder="base URL" className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm" /><input type="password" value={draftConfig.apiKey} onChange={(e) => setDraftConfig((p) => ({ ...p, apiKey: e.target.value }))} placeholder="AGENT_API_KEY" className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm" /><select value={draftConfig.role} onChange={(e) => setDraftConfig((p) => ({ ...p, role: e.target.value as AgentRole }))} className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"><option value="realtor_admin">realtor_admin</option><option value="ops">ops</option></select><div className="flex gap-2"><button type="button" onClick={saveSettings} className="inline-flex items-center rounded-xl bg-emerald-600 px-3 py-2 text-sm text-white"><Settings2 className="mr-1 h-4 w-4" />Save</button><button type="button" onClick={() => void probeHealth()} className="inline-flex items-center rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"><RefreshCcw className="mr-1 h-4 w-4" />Ping</button></div></div></div>
+                <div className="surface-panel rounded-3xl p-4"><h3 className="text-base font-semibold">Guardrails</h3><div className="mt-2 space-y-2 text-sm"><div className="rounded-xl bg-emerald-50 p-3 text-emerald-900">Use valid `x-agent-api-key` and `x-agent-role` headers.</div><div className="rounded-xl bg-sky-50 p-3 text-sky-900">Run preflight and approval before run.</div><div className="rounded-xl bg-amber-50 p-3 text-amber-900">Marketing should keep consentMode=required.</div></div></div>
+              </section>
+            )}
+          </main>
         </div>
       </div>
     </div>
   );
-};
+}
 
 export default App;

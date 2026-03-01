@@ -4,6 +4,87 @@ Date: 2026-02-24
 Project root: `C:\Users\visha\propai-tech`  
 Branch: `main`
 
+## Update - 2026-03-01 (WABA compliance layer + production React control plane)
+
+Scope completed:
+
+- Ported realtor compliance/campaign controls from `waba-agent` into this codebase.
+- Added full React control-plane screens and backend wiring for production operations.
+- Verified backend + frontend build/test status end-to-end.
+
+### Backend additions
+
+- New compliance/intent modules:
+  - `src/agentic/realtor-control/types.ts`
+  - `src/agentic/realtor-control/policy.ts`
+  - `src/agentic/realtor-control/intent.ts`
+- Store layer updated in `src/agentic/suite/store.ts`:
+  - consent APIs (upsert/revoke/get/list)
+  - campaign APIs (create/update/get/list)
+  - Postgres tables:
+    - `realtor_consents`
+    - `realtor_campaigns`
+- Server endpoints added in `src/agentic/server.ts`:
+  - `POST /realtor/intent/classify`
+  - `POST /realtor/consent/add`
+  - `POST /realtor/consent/revoke`
+  - `GET /realtor/consent/status`
+  - `GET /realtor/consent/list`
+  - `POST /realtor/campaign/create`
+  - `GET /realtor/campaign/list`
+  - `GET /realtor/campaign/status`
+  - `POST /realtor/campaign/approve`
+  - `POST /realtor/campaign/preflight`
+  - `POST /realtor/campaign/run`
+- Outbound follow-up compliance gate in `src/agentic/suite/toolkit.ts`:
+  - blocks send when active consent is missing.
+
+### Frontend additions
+
+- Replaced control plane UI in `web/src/App.tsx` with production screens:
+  - Dashboard
+  - Consent Ledger
+  - Campaign Studio
+  - Campaign Ops
+  - Intent Lab
+  - Audit Trail
+  - Settings
+- Added production shell styles in `web/src/styles.css`:
+  - `app-background`
+  - `surface-panel`
+  - `fade-rise`
+- Frontend calls real endpoints with required headers:
+  - `x-agent-api-key`
+  - `x-agent-role`
+
+### Tests and validation
+
+- `web`: `npm run build` passed.
+- root: `npm test` passed with `All tests passed (32/32)`.
+
+### Auth and runtime notes
+
+- Protected `/realtor/*` endpoints require:
+  - `AGENT_API_KEY` on server
+  - matching `x-agent-api-key` + allowed `x-agent-role` in requests.
+- Allowed roles come from `AGENT_ALLOWED_ROLES` (default includes `realtor_admin,ops`).
+
+### APK packaging path (for next agent/operator)
+
+Railway hosts backend/web app, but APK packaging is external to Railway.
+Recommended flow:
+
+1. Deploy app to Railway and verify `/app`.
+2. In `web/`, configure Capacitor with `server.url` pointing to Railway `/app`.
+3. Build web, `npx cap add android`, `npx cap sync android`.
+4. Open Android Studio and generate signed APK/AAB.
+
+### Suggested next actions
+
+1. Add `.env.example` entries for realtor controls (`AGENT_API_KEY`, `AGENT_ALLOWED_ROLES`, DB notes).
+2. Add smoke script for `/realtor/*` endpoint flow (create -> preflight -> approve -> run).
+3. If APK release is required immediately, initialize Capacitor in `web/` and commit Android project scaffold.
+
 ## Update - 2026-02-24 (Node 25 runtime alignment)
 
 Issue addressed:

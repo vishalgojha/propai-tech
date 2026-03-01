@@ -19,11 +19,23 @@ import { getSuiteSessionManager } from "./suite/session-manager.js";
 import { parseGuidedFlowId } from "./suite/guided-flows.js";
 import { createSuiteExecutionQueue } from "./suite/execution-queue.js";
 import { createGroupPostingService, type GroupPostingService } from "./group-posting/service.js";
+import { getSuiteStore } from "./suite/store.js";
+import {
+  createCampaignDraft,
+  evaluateCampaignPreflight,
+  formatPreflightReason,
+  markCampaignApproved,
+  markPolicyCheck,
+  normalizeCampaign
+} from "./realtor-control/policy.js";
+import { classifyRealtorIntent } from "./realtor-control/intent.js";
+import type { RealtorCampaign } from "./realtor-control/types.js";
 
 const orchestrator = new RealtorOrchestrator();
 const suiteEngine = new RealtorSuiteAgentEngine();
 const pairingStore = getPairingStore();
 const suiteSessionManager = getSuiteSessionManager();
+const suiteStore = getSuiteStore();
 const CURRENT_FILE_DIR = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT_FROM_MODULE = resolve(CURRENT_FILE_DIR, "..", "..");
 const REACT_APP_DIST_CANDIDATES = Array.from(
@@ -239,6 +251,366 @@ async function route(
   if (method === "GET" && path === "/connectors/health") {
     const snapshot = await getConnectorHealthSnapshot();
     sendJson(res, 200, { ok: true, result: snapshot });
+    return;
+  }
+
+  if (method === "POST" && path === "/realtor/intent/classify") {
+    const auth = authorizeAgentChat(req, runtimeConfig);
+    if (!auth.ok) {
+      sendJson(res, auth.status, { ok: false, error: auth.error });
+      return;
+    }
+
+    const body = await parseRequestJson<{ text?: string; useAi?: boolean; model?: string }>();
+    if (typeof body.text !== "string" || body.text.trim().length === 0) {
+      sendJson(res, 400, { ok: false, error: "text is required and must be a non-empty string." });
+      return;
+    }
+    if (body.useAi !== undefined && typeof body.useAi !== "boolean") {
+      sendJson(res, 400, { ok: false, error: "useAi must be a boolean when provided." });
+      return;
+    }
+
+    const result = await classifyRealtorIntent(body.text, {
+      useAi: body.useAi,
+      model: body.model
+    });
+    sendJson(res, 200, { ok: true, result });
+    return;
+  }
+
+  if (method === "POST" && path === "/realtor/consent/add") {
+    const auth = authorizeAgentChat(req, runtimeConfig);
+    if (!auth.ok) {
+      sendJson(res, auth.status, { ok: false, error: auth.error });
+      return;
+    }
+
+    const body = await parseRequestJson<{
+      phone?: string;
+      source?: string;
+      purpose?: string;
+      channel?: string;
+      proofRef?: string;
+    }>();
+    if (typeof body.phone !== "string" || body.phone.trim().length === 0) {
+      sendJson(res, 400, { ok: false, error: "phone is required and must be a non-empty string." });
+      return;
+    }
+
+    try {
+      const record = await suiteStore.upsertRealtorConsent({
+        phone: body.phone,
+        status: "opted_in",
+        source: body.source || "manual",
+        purpose: body.purpose || "marketing",
+        channel: body.channel || "whatsapp",
+        proofRef: body.proofRef
+      });
+      sendJson(res, 200, { ok: true, result: { record } });
+    } catch (error) {
+      if (error instanceof Error && error.message === "invalid_phone") {
+        sendJson(res, 400, { ok: false, error: "phone must be a valid E.164 number." });
+        return;
+      }
+      throw error;
+    }
+    return;
+  }
+
+  if (method === "POST" && path === "/realtor/consent/revoke") {
+    const auth = authorizeAgentChat(req, runtimeConfig);
+    if (!auth.ok) {
+      sendJson(res, auth.status, { ok: false, error: auth.error });
+      return;
+    }
+
+    const body = await parseRequestJson<{ phone?: string; source?: string; reason?: string }>();
+    if (typeof body.phone !== "string" || body.phone.trim().length === 0) {
+      sendJson(res, 400, { ok: false, error: "phone is required and must be a non-empty string." });
+      return;
+    }
+
+    try {
+      const record = await suiteStore.revokeRealtorConsent({
+        phone: body.phone,
+        source: body.source || "manual",
+        reason: body.reason || "user-request"
+      });
+      sendJson(res, 200, { ok: true, result: { record } });
+    } catch (error) {
+      if (error instanceof Error && error.message === "invalid_phone") {
+        sendJson(res, 400, { ok: false, error: "phone must be a valid E.164 number." });
+        return;
+      }
+      throw error;
+    }
+    return;
+  }
+
+  if (method === "GET" && path === "/realtor/consent/status") {
+    const auth = authorizeAgentChat(req, runtimeConfig);
+    if (!auth.ok) {
+      sendJson(res, auth.status, { ok: false, error: auth.error });
+      return;
+    }
+
+    const phone = getOptionalQueryParam(requestUrl, "phone");
+    if (!phone) {
+      sendJson(res, 400, { ok: false, error: "phone query parameter is required." });
+      return;
+    }
+    const record = await suiteStore.getRealtorConsent(phone);
+    const canMessage = !!record && record.status === "opted_in";
+    sendJson(res, 200, {
+      ok: true,
+      result: {
+        phone,
+        record,
+        canMessage
+      }
+    });
+    return;
+  }
+
+  if (method === "GET" && path === "/realtor/consent/list") {
+    const auth = authorizeAgentChat(req, runtimeConfig);
+    if (!auth.ok) {
+      sendJson(res, auth.status, { ok: false, error: auth.error });
+      return;
+    }
+    const status = getOptionalQueryParam(requestUrl, "status");
+    if (status && status !== "opted_in" && status !== "opted_out") {
+      sendJson(res, 400, { ok: false, error: "status must be opted_in or opted_out when provided." });
+      return;
+    }
+    const records = await suiteStore.listRealtorConsents({
+      status: status as "opted_in" | "opted_out" | undefined
+    });
+    sendJson(res, 200, { ok: true, result: { records } });
+    return;
+  }
+
+  if (method === "POST" && path === "/realtor/campaign/create") {
+    const auth = authorizeAdminAction(req, runtimeConfig);
+    if (!auth.ok) {
+      sendJson(res, auth.status, { ok: false, error: auth.error });
+      return;
+    }
+
+    const body = await parseRequestJson<{
+      name?: string;
+      client?: string;
+      templateName?: string;
+      language?: string;
+      category?: "utility" | "marketing";
+      audience?: string[];
+      consentMode?: "required" | "optional" | "disabled";
+      requireApproval?: boolean;
+      reraProjectId?: string;
+    }>();
+
+    if (typeof body.name !== "string" || body.name.trim().length === 0) {
+      sendJson(res, 400, { ok: false, error: "name is required and must be a non-empty string." });
+      return;
+    }
+    if (typeof body.templateName !== "string" || body.templateName.trim().length === 0) {
+      sendJson(res, 400, { ok: false, error: "templateName is required and must be a non-empty string." });
+      return;
+    }
+    if (body.audience !== undefined && !Array.isArray(body.audience)) {
+      sendJson(res, 400, { ok: false, error: "audience must be an array of phone numbers when provided." });
+      return;
+    }
+    if (Array.isArray(body.audience) && body.audience.some((value) => typeof value !== "string")) {
+      sendJson(res, 400, { ok: false, error: "audience must contain only strings." });
+      return;
+    }
+
+    const campaign = createCampaignDraft({
+      name: body.name,
+      client: body.client || "default",
+      templateName: body.templateName,
+      language: body.language,
+      category: body.category,
+      audience: body.audience,
+      consentMode: body.consentMode,
+      requireApproval: body.requireApproval,
+      reraProjectId: body.reraProjectId
+    });
+    const created = await suiteStore.createRealtorCampaign({ campaign });
+    sendJson(res, 200, { ok: true, result: { campaign: created } });
+    return;
+  }
+
+  if (method === "GET" && path === "/realtor/campaign/list") {
+    const auth = authorizeAdminAction(req, runtimeConfig);
+    if (!auth.ok) {
+      sendJson(res, auth.status, { ok: false, error: auth.error });
+      return;
+    }
+    const campaigns = await suiteStore.listRealtorCampaigns();
+    sendJson(res, 200, { ok: true, result: { campaigns } });
+    return;
+  }
+
+  if (method === "GET" && path === "/realtor/campaign/status") {
+    const auth = authorizeAdminAction(req, runtimeConfig);
+    if (!auth.ok) {
+      sendJson(res, auth.status, { ok: false, error: auth.error });
+      return;
+    }
+    const id = getOptionalQueryParam(requestUrl, "id");
+    if (!id) {
+      sendJson(res, 400, { ok: false, error: "id query parameter is required." });
+      return;
+    }
+    const campaign = await suiteStore.getRealtorCampaign(id);
+    if (!campaign) {
+      sendJson(res, 404, { ok: false, error: "campaign_not_found" });
+      return;
+    }
+    sendJson(res, 200, { ok: true, result: { campaign } });
+    return;
+  }
+
+  if (method === "POST" && path === "/realtor/campaign/approve") {
+    const auth = authorizeAdminAction(req, runtimeConfig);
+    if (!auth.ok) {
+      sendJson(res, auth.status, { ok: false, error: auth.error });
+      return;
+    }
+    const body = await parseRequestJson<{ id?: string; approvedBy?: string; note?: string }>();
+    if (typeof body.id !== "string" || body.id.trim().length === 0) {
+      sendJson(res, 400, { ok: false, error: "id is required and must be a non-empty string." });
+      return;
+    }
+    if (typeof body.approvedBy !== "string" || body.approvedBy.trim().length === 0) {
+      sendJson(res, 400, { ok: false, error: "approvedBy is required and must be a non-empty string." });
+      return;
+    }
+    const campaign = await suiteStore.getRealtorCampaign(body.id);
+    if (!campaign) {
+      sendJson(res, 404, { ok: false, error: "campaign_not_found" });
+      return;
+    }
+    const approved = markCampaignApproved(campaign, body.approvedBy.trim(), body.note);
+    const saved = await suiteStore.updateRealtorCampaign(approved);
+    sendJson(res, 200, { ok: true, result: { campaign: saved } });
+    return;
+  }
+
+  if (method === "POST" && path === "/realtor/campaign/preflight") {
+    const auth = authorizeAdminAction(req, runtimeConfig);
+    if (!auth.ok) {
+      sendJson(res, auth.status, { ok: false, error: auth.error });
+      return;
+    }
+    const body = await parseRequestJson<{ id?: string }>();
+    if (typeof body.id !== "string" || body.id.trim().length === 0) {
+      sendJson(res, 400, { ok: false, error: "id is required and must be a non-empty string." });
+      return;
+    }
+    const campaign = await suiteStore.getRealtorCampaign(body.id);
+    if (!campaign) {
+      sendJson(res, 404, { ok: false, error: "campaign_not_found" });
+      return;
+    }
+    const check = evaluateCampaignPreflight(campaign);
+    const next = markPolicyCheck(campaign, check);
+    const saved = await suiteStore.updateRealtorCampaign(next);
+    sendJson(res, 200, {
+      ok: true,
+      result: {
+        campaign: saved,
+        preflight: check,
+        errors: check.reasons.map((reason) => formatPreflightReason(reason))
+      }
+    });
+    return;
+  }
+
+  if (method === "POST" && path === "/realtor/campaign/run") {
+    const auth = authorizeAdminAction(req, runtimeConfig);
+    if (!auth.ok) {
+      sendJson(res, auth.status, { ok: false, error: auth.error });
+      return;
+    }
+    const body = await parseRequestJson<{ id?: string; dryRun?: boolean }>();
+    if (typeof body.id !== "string" || body.id.trim().length === 0) {
+      sendJson(res, 400, { ok: false, error: "id is required and must be a non-empty string." });
+      return;
+    }
+    if (body.dryRun !== undefined && typeof body.dryRun !== "boolean") {
+      sendJson(res, 400, { ok: false, error: "dryRun must be a boolean when provided." });
+      return;
+    }
+    const campaign = await suiteStore.getRealtorCampaign(body.id);
+    if (!campaign) {
+      sendJson(res, 404, { ok: false, error: "campaign_not_found" });
+      return;
+    }
+
+    const preflight = evaluateCampaignPreflight(campaign);
+    let nextCampaign: RealtorCampaign = markPolicyCheck(campaign, preflight);
+    if (!preflight.ok) {
+      nextCampaign = await suiteStore.updateRealtorCampaign(nextCampaign);
+      sendJson(res, 409, {
+        ok: false,
+        error: "campaign_blocked_by_policy",
+        result: {
+          campaign: nextCampaign,
+          preflight,
+          errors: preflight.reasons.map((reason) => formatPreflightReason(reason))
+        }
+      });
+      return;
+    }
+
+    nextCampaign = normalizeCampaign(nextCampaign);
+    nextCampaign.status = "running";
+
+    const startIndex = nextCampaign.progress.lastIndex || 0;
+    const consentRequired = nextCampaign.compliance.consentMode === "required";
+    const processedRecipients: Array<{ phone: string; action: "sent" | "opted_out" | "blocked"; reason?: string }> = [];
+
+    for (let index = startIndex; index < nextCampaign.audience.length; index += 1) {
+      const phone = nextCampaign.audience[index];
+      const consent = await suiteStore.getRealtorConsent(phone);
+      nextCampaign.progress.processed += 1;
+      nextCampaign.progress.lastIndex = index + 1;
+
+      if (consentRequired) {
+        if (consent?.status === "opted_out") {
+          nextCampaign.progress.optedOut += 1;
+          processedRecipients.push({ phone, action: "opted_out", reason: "recipient_opted_out" });
+          continue;
+        }
+        if (!consent || consent.status !== "opted_in") {
+          nextCampaign.progress.blockedByPolicy += 1;
+          processedRecipients.push({ phone, action: "blocked", reason: "missing_active_consent" });
+          continue;
+        }
+      }
+
+      nextCampaign.progress.sent += 1;
+      processedRecipients.push({
+        phone,
+        action: "sent",
+        reason: body.dryRun === false ? "simulated_send_only_no_dispatcher" : "dry_run_simulated"
+      });
+    }
+
+    nextCampaign.status = "completed";
+    nextCampaign.lastRunAtIso = new Date().toISOString();
+    nextCampaign = await suiteStore.updateRealtorCampaign(nextCampaign);
+    sendJson(res, 200, {
+      ok: true,
+      result: {
+        campaign: nextCampaign,
+        processedRecipients
+      }
+    });
     return;
   }
 
@@ -1132,7 +1504,14 @@ function shouldApplyRateLimit(method: string, path: string): boolean {
     "/wacli/doctor",
     "/group-posting/intake",
     "/group-posting/dispatch",
-    "/whatsapp/pairing/approve"
+    "/whatsapp/pairing/approve",
+    "/realtor/intent/classify",
+    "/realtor/consent/add",
+    "/realtor/consent/revoke",
+    "/realtor/campaign/create",
+    "/realtor/campaign/approve",
+    "/realtor/campaign/preflight",
+    "/realtor/campaign/run"
   ].includes(path);
 }
 

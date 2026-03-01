@@ -392,6 +392,17 @@ npx @railway/cli up
 - `POST /whatsapp/pairing/approve`
 - `GET /whatsapp/webhook` (Meta verify challenge)
 - `POST /whatsapp/webhook` (Meta events + optional signature verification)
+- `POST /realtor/intent/classify`
+- `POST /realtor/consent/add`
+- `POST /realtor/consent/revoke`
+- `GET /realtor/consent/status?phone=<e164>`
+- `GET /realtor/consent/list`
+- `POST /realtor/campaign/create`
+- `POST /realtor/campaign/approve`
+- `POST /realtor/campaign/preflight`
+- `POST /realtor/campaign/run`
+- `GET /realtor/campaign/status?id=<campaign-id>`
+- `GET /realtor/campaign/list`
 
 ### Example: run orchestrator
 
@@ -436,6 +447,39 @@ curl -X POST http://localhost:8080/agent/chat \
     "model": "openai/gpt-4o-mini",
     "dryRun": true
   }'
+```
+
+### Example: realtor campaign preflight flow
+
+```bash
+curl -X POST http://localhost:8080/realtor/consent/add \
+  -H "Content-Type: application/json" \
+  -H "x-agent-api-key: your-key" \
+  -H "x-agent-role: realtor_admin" \
+  -d '{
+    "phone": "+919812345678",
+    "source": "website-form",
+    "purpose": "marketing"
+  }'
+
+curl -X POST http://localhost:8080/realtor/campaign/create \
+  -H "Content-Type: application/json" \
+  -H "x-agent-api-key: your-key" \
+  -H "x-agent-role: realtor_admin" \
+  -d '{
+    "name": "March Warm Lead Push",
+    "client": "acme",
+    "templateName": "resale_marketing_nudge",
+    "category": "marketing",
+    "reraProjectId": "P52100012345",
+    "audience": ["+919812345678"]
+  }'
+
+curl -X POST http://localhost:8080/realtor/campaign/preflight \
+  -H "Content-Type: application/json" \
+  -H "x-agent-api-key: your-key" \
+  -H "x-agent-role: realtor_admin" \
+  -d '{"id":"<campaign-id>"}'
 ```
 
 ### Example: session-based queue flow
@@ -644,7 +688,7 @@ curl -X POST http://localhost:8080/whatsapp/pairing/approve \
 - `PROPAI_LIVE_TIMEOUT_MS` (default `8000`, request timeout per attempt)
 - `PROPAI_LIVE_MAX_RETRIES` (default `2`, retries on 429/5xx and transient failures)
 - `PROPAI_LIVE_RETRY_BACKOFF_MS` (default `300`, linear backoff base)
-- `AGENT_API_KEY` (optional; when set it is enforced for `/agent/chat`, `/agent/run`, `/agent/session/*`, and `/wacli/*`. Required for admin actions such as `/group-posting/*` and `/whatsapp/pairing/approve`)
+- `AGENT_API_KEY` (optional; when set it is enforced for `/agent/chat`, `/agent/run`, `/agent/session/*`, `/wacli/*`, and `/realtor/*`. Required for admin actions such as `/group-posting/*`, `/realtor/campaign/*`, and `/whatsapp/pairing/approve`)
 - `AGENT_ALLOWED_ROLES` (optional CSV, default `realtor_admin,ops`; checks `x-agent-role` when provided)
 - `AGENT_RATE_LIMIT_WINDOW_MS` (default `60000`, rate-limit window for POST execution routes)
 - `AGENT_RATE_LIMIT_MAX` (default `180`, max POST execution requests per window per IP+route key)

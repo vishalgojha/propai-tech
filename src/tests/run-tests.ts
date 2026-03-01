@@ -16,6 +16,9 @@ import {
 import { startAgenticServer } from "../agentic/server.js";
 import { GroupPostingService } from "../agentic/group-posting/service.js";
 import { createGroupPostStore } from "../agentic/group-posting/store.js";
+import { createCampaignDraft, evaluateCampaignPreflight } from "../agentic/realtor-control/policy.js";
+import { classifyRealtorIntentHeuristic } from "../agentic/realtor-control/intent.js";
+import { getSuiteStore } from "../agentic/suite/store.js";
 
 type TestCase = {
   name: string;
@@ -190,6 +193,51 @@ const tests: TestCase[] = [
       assert.equal(data?.resalePlaybook?.language, "hi");
       assert.ok(Array.isArray(data?.nextActions));
       assert.ok((data?.nextActions || []).some((item) => item.includes("nurture follow-up")));
+    }
+  },
+  {
+    name: "realtor policy defaults and heuristic intent classifier work",
+    run: () => {
+      const draft = createCampaignDraft({
+        name: "March Re-engagement",
+        client: "acme",
+        templateName: "resale_followup_template",
+        category: "marketing",
+        audience: ["+91 98123 45678"]
+      });
+      assert.equal(draft.compliance.consentMode, "required");
+      const blockedPreflight = evaluateCampaignPreflight(draft);
+      assert.equal(blockedPreflight.ok, false);
+      assert.equal(blockedPreflight.reasons.includes("approval_required"), true);
+      assert.equal(blockedPreflight.reasons.includes("rera_project_id_required"), true);
+
+      const intent = classifyRealtorIntentHeuristic("Need price sheet and site visit for 2 BHK in Baner");
+      assert.equal(intent.intent, "site_visit");
+      assert.equal(intent.route, "sales_schedule_visit");
+      assert.equal((intent.fields as { bedrooms?: number }).bedrooms, 2);
+    }
+  },
+  {
+    name: "send_whatsapp_followup blocks outbound when consent is missing",
+    run: async () => {
+      const uniquePhone = `+9198${Date.now().toString().slice(-8)}`;
+      const store = getSuiteStore();
+      const existing = await store.getRealtorConsent(uniquePhone);
+      assert.equal(existing, null);
+
+      const result = await runSendWhatsappFollowup({
+        message: "Send follow-up to this lead now",
+        recipient: uniquePhone,
+        dryRun: true,
+        lead: {
+          message: "Need details",
+          name: "Consent Missing Lead",
+          preferredLanguage: "en"
+        }
+      });
+
+      assert.equal(result.ok, false);
+      assert.match(result.summary, /Missing active consent/i);
     }
   },
   {
@@ -712,6 +760,161 @@ const tests: TestCase[] = [
           delete process.env.WHATSAPP_APP_SECRET;
         } else {
           process.env.WHATSAPP_APP_SECRET = previousSecret;
+        }
+      }
+    }
+  },
+  {
+    name: "/realtor consent + campaign policy endpoints enforce create/approve/preflight/run flow",
+    run: async () => {
+      const previousKey = process.env.AGENT_API_KEY;
+      const previousRoles = process.env.AGENT_ALLOWED_ROLES;
+      process.env.AGENT_API_KEY = "realtor-key";
+      process.env.AGENT_ALLOWED_ROLES = "realtor_admin,ops";
+
+      const phone = `+9198${Date.now().toString().slice(-8)}`;
+
+      try {
+        await withServer(async (baseUrl) => {
+          const commonHeaders = {
+            "content-type": "application/json",
+            "x-agent-api-key": "realtor-key",
+            "x-agent-role": "realtor_admin"
+          };
+
+          const consentAdd = await fetch(`${baseUrl}/realtor/consent/add`, {
+            method: "POST",
+            headers: commonHeaders,
+            body: JSON.stringify({
+              phone,
+              source: "website-form",
+              purpose: "marketing"
+            })
+          });
+          assert.equal(consentAdd.status, 200);
+
+          const classify = await fetch(`${baseUrl}/realtor/intent/classify`, {
+            method: "POST",
+            headers: commonHeaders,
+            body: JSON.stringify({
+              text: "Need site visit and price sheet for 2 BHK in Baner",
+              useAi: false
+            })
+          });
+          assert.equal(classify.status, 200);
+          const classifyPayload = (await classify.json()) as {
+            ok: boolean;
+            result: { intent: string };
+          };
+          assert.equal(classifyPayload.ok, true);
+          assert.equal(classifyPayload.result.intent, "site_visit");
+
+          const createCampaign = await fetch(`${baseUrl}/realtor/campaign/create`, {
+            method: "POST",
+            headers: commonHeaders,
+            body: JSON.stringify({
+              name: "March Run",
+              client: "acme",
+              templateName: "resale_marketing_nudge",
+              category: "marketing",
+              language: "en",
+              reraProjectId: "P52100012345",
+              audience: [phone]
+            })
+          });
+          assert.equal(createCampaign.status, 200);
+          const createPayload = (await createCampaign.json()) as {
+            ok: boolean;
+            result: {
+              campaign: {
+                id: string;
+              };
+            };
+          };
+          const campaignId = createPayload.result.campaign.id;
+
+          const preflightBlocked = await fetch(`${baseUrl}/realtor/campaign/preflight`, {
+            method: "POST",
+            headers: commonHeaders,
+            body: JSON.stringify({ id: campaignId })
+          });
+          assert.equal(preflightBlocked.status, 200);
+          const blockedPayload = (await preflightBlocked.json()) as {
+            ok: boolean;
+            result: {
+              preflight: {
+                ok: boolean;
+                reasons: string[];
+              };
+            };
+          };
+          assert.equal(blockedPayload.result.preflight.ok, false);
+          assert.equal(blockedPayload.result.preflight.reasons.includes("approval_required"), true);
+
+          const approve = await fetch(`${baseUrl}/realtor/campaign/approve`, {
+            method: "POST",
+            headers: commonHeaders,
+            body: JSON.stringify({
+              id: campaignId,
+              approvedBy: "ops@acme.com",
+              note: "ready for run"
+            })
+          });
+          assert.equal(approve.status, 200);
+
+          const preflightPass = await fetch(`${baseUrl}/realtor/campaign/preflight`, {
+            method: "POST",
+            headers: commonHeaders,
+            body: JSON.stringify({ id: campaignId })
+          });
+          assert.equal(preflightPass.status, 200);
+          const passPayload = (await preflightPass.json()) as {
+            ok: boolean;
+            result: {
+              preflight: {
+                ok: boolean;
+              };
+            };
+          };
+          assert.equal(passPayload.result.preflight.ok, true);
+
+          const runCampaign = await fetch(`${baseUrl}/realtor/campaign/run`, {
+            method: "POST",
+            headers: commonHeaders,
+            body: JSON.stringify({
+              id: campaignId,
+              dryRun: true
+            })
+          });
+          assert.equal(runCampaign.status, 200);
+          const runPayload = (await runCampaign.json()) as {
+            ok: boolean;
+            result: {
+              campaign: {
+                status: string;
+                progress: {
+                  sent: number;
+                  blockedByPolicy: number;
+                };
+              };
+            };
+          };
+          assert.equal(runPayload.ok, true);
+          assert.equal(runPayload.result.campaign.status, "completed");
+          assert.equal(runPayload.result.campaign.progress.sent, 1);
+          assert.equal(runPayload.result.campaign.progress.blockedByPolicy, 0);
+        });
+      } finally {
+        if (previousKey === undefined) {
+          delete process.env.AGENT_API_KEY;
+        } else {
+          process.env.AGENT_API_KEY = previousKey;
+        }
+
+        if (previousRoles === undefined) {
+          delete process.env.AGENT_ALLOWED_ROLES;
+        } else {
+          process.env.AGENT_ALLOWED_ROLES = previousRoles;
         }
       }
     }

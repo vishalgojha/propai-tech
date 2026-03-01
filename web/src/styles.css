@@ -175,3 +175,40 @@
     }
   }
 }
+
+@layer base {
+  body {
+    font-family: "Manrope", "IBM Plex Sans", "Segoe UI", sans-serif;
+  }
+}
+
+@layer components {
+  .app-background {
+    background:
+      radial-gradient(90rem 50rem at 110% -10%, rgba(16, 185, 129, 0.15), transparent 40%),
+      radial-gradient(60rem 35rem at -10% 120%, rgba(56, 189, 248, 0.14), transparent 45%),
+      linear-gradient(180deg, #f8fafc 0%, #f1f5f9 55%, #e2e8f0 100%);
+  }
+
+  .surface-panel {
+    background: rgba(255, 255, 255, 0.88);
+    border: 1px solid rgba(148, 163, 184, 0.24);
+    box-shadow: 0 12px 32px rgba(15, 23, 42, 0.08);
+    backdrop-filter: blur(7px);
+  }
+
+  .fade-rise {
+    animation: fade-rise 320ms ease-out;
+  }
+}
+
+@keyframes fade-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

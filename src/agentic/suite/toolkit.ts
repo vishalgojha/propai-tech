@@ -197,6 +197,23 @@ export async function runSendWhatsappFollowup(input: ChatRequest): Promise<ToolE
     };
   }
 
+  const consent = await store.getRealtorConsent(input.recipient);
+  if (!consent || consent.status !== "opted_in") {
+    const recipientMasked = redactPhone(input.recipient);
+    return {
+      tool: "send_whatsapp_followup",
+      ok: false,
+      summary: `Blocked follow-up for ${recipientMasked}. Missing active consent in realtor ledger.`,
+      data: {
+        recipient: recipientMasked,
+        consentStatus: consent?.status || "missing",
+        message: draftMessage,
+        nextActions,
+        policy: "consent_required"
+      }
+    };
+  }
+
   const wacli = new WacliTool({ dryRun: input.dryRun });
   const send = await wacli.sendText(input.recipient, draftMessage);
   const recipientMasked = redactPhone(input.recipient);
